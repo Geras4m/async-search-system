@@ -60,6 +60,15 @@ public sealed partial class RabbitMqSearchEventsPublisher(
     /// </remarks>
     private static readonly TimeSpan PublishTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// Grace period for closing a channel that is being discarded after a failure.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately short. This runs while the publish gate is held, so a channel close that
+    /// hangs against an unresponsive broker would defeat <see cref="PublishTimeout"/>.
+    /// </remarks>
+    private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(2);
+
     private readonly SemaphoreSlim _publishGate = new(1, 1);
 
     private IChannel? _channel;
@@ -245,13 +254,28 @@ public sealed partial class RabbitMqSearchEventsPublisher(
             .CreateChannelAsync(channelOptions, cancellationToken)
             .ConfigureAwait(false);
 
-        await channel.ExchangeDeclareAsync(
-            exchange: MessagingConstants.SearchCompletedExchange,
-            type: MessagingConstants.SearchCompletedExchangeType,
-            durable: true,
-            autoDelete: false,
-            arguments: null,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        // From here the channel exists on the broker but is not yet reachable through
+        // _channel, so nothing else can clean it up. The declare below is cancellable and, now
+        // that publishing runs under a deadline, that cancellation is an ordinary occurrence
+        // rather than a shutdown-only one. Letting the exception escape would abandon an open
+        // channel on the shared connection with no reference left to close it, and enough of
+        // those would exhaust the connection's channel budget and break publishing for good.
+        try
+        {
+            await channel.ExchangeDeclareAsync(
+                exchange: MessagingConstants.SearchCompletedExchange,
+                type: MessagingConstants.SearchCompletedExchangeType,
+                durable: true,
+                autoDelete: false,
+                arguments: null,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await DisposeChannelAsync(channel).ConfigureAwait(false);
+
+            throw;
+        }
 
         LogExchangeDeclared(
             MessagingConstants.SearchCompletedExchange,
@@ -277,11 +301,34 @@ public sealed partial class RabbitMqSearchEventsPublisher(
 
         _channel = null;
 
+        await DisposeChannelAsync(channel).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Closes one channel, never blocking the caller for longer than <see cref="CloseTimeout"/>.
+    /// </summary>
+    /// <param name="channel">The channel to close.</param>
+    /// <returns>A task that completes once the channel has been closed or given up on.</returns>
+    /// <remarks>
+    /// Closing a channel is an AMQP round trip, so against a broker that has stopped answering
+    /// it can hang for as long as the connection takes to fault. That matters here because
+    /// this runs on the failure path of a publish, while the publish gate is still held: an
+    /// unbounded close would make the publish deadline a fiction and reintroduce exactly the
+    /// stall the deadline exists to prevent. The close is therefore abandoned after a short
+    /// grace period. Dropping the reference is enough — the connection owns the channel and
+    /// tears it down when it is itself disposed or faults.
+    /// </remarks>
+    private async ValueTask DisposeChannelAsync(IChannel channel)
+    {
         try
         {
-            await channel.DisposeAsync().ConfigureAwait(false);
+            await channel.DisposeAsync().AsTask().WaitAsync(CloseTimeout).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (TimeoutException)
+        {
+            LogChannelCloseTimedOut(CloseTimeout);
+        }
+        catch (Exception ex)
         {
             // Closing a channel whose connection has already gone typically faults. The
             // channel is being discarded either way, so this must not mask the real error.
@@ -312,4 +359,12 @@ public sealed partial class RabbitMqSearchEventsPublisher(
         Level = LogLevel.Debug,
         Message = "Ignored a failure while closing a RabbitMQ channel.")]
     private partial void LogChannelCloseFailed(Exception exception);
+
+    /// <summary>Records a channel close abandoned because it exceeded its grace period.</summary>
+    /// <param name="closeTimeout">The grace period that elapsed.</param>
+    [LoggerMessage(
+        EventId = 4004,
+        Level = LogLevel.Warning,
+        Message = "Closing the RabbitMQ publishing channel exceeded {CloseTimeout} and was abandoned.")]
+    private partial void LogChannelCloseTimedOut(TimeSpan closeTimeout);
 }
