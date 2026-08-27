@@ -1,0 +1,164 @@
+# Async Search System — full local environment.
+#
+#   docker compose up --build
+#
+# brings up the broker and all three services. Nothing else is required: every setting
+# below has a working default, so a .env file is optional (see .env.example).
+#
+# Two things in here are worth reading before changing anything:
+#
+#  1. Every build uses "context: ." — the repository root — because Directory.Build.props,
+#     Directory.Packages.props and the src/Shared projects all live above the individual
+#     project directories, and a Docker build cannot reach outside its context. The
+#     Dockerfiles are written against repo-root-relative paths to match. See the comment
+#     header in any of the three Dockerfiles for the longer explanation.
+#
+#  2. Environment variable names use a double underscore, e.g. RabbitMq__Host. That is how
+#     .NET's environment variable configuration provider spells a nested key: __ maps to
+#     the ':' separator, so RabbitMq__Host binds to the "RabbitMq:Host" setting, which is
+#     the "Host" property of the "RabbitMq" section in appsettings.json. Environment
+#     variables win over appsettings.json, so these values override the file defaults.
+
+name: async-search-system
+
+services:
+
+  # -------------------------------------------------------------------------------------
+  # Message broker. The Search Service publishes completion events here and the
+  # Notification Service consumes them; the two services never talk to each other directly.
+  # -------------------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: asyncsearch-rabbitmq
+    # A fixed hostname keeps the Mnesia database directory name stable (RabbitMQ derives it
+    # from the node name, which contains the hostname). Without this, recreating the
+    # container would strand the previous data inside the named volume.
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:-guest}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:-guest}"
+    ports:
+      # AMQP, for anything you want to point at the broker from the host.
+      - "${RABBITMQ_AMQP_PORT:-5672}:5672"
+      # Management UI — browse to http://localhost:15672 to watch the exchange and queue.
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    # The gate that the two messaging services wait on. A RabbitMQ container accepts TCP
+    # connections well before the broker is ready to serve them, so "the port is open" is
+    # not a usable readiness signal; rabbitmq-diagnostics ping asks the node itself.
+    # start_period covers the initial boot, during which failures do not count as retries.
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - async-search
+
+  # -------------------------------------------------------------------------------------
+  # Search Service: gRPC server plus the background engine that appends six result batches
+  # at five second intervals and then publishes the completion event.
+  # -------------------------------------------------------------------------------------
+  searchservice:
+    build:
+      # Repository root as context — see note 1 in the header.
+      context: .
+      dockerfile: src/SearchService/SearchService.Api/Dockerfile
+    container_name: asyncsearch-searchservice
+    depends_on:
+      rabbitmq:
+        # Wait for the healthcheck above to pass, not merely for the container to start,
+        # so the very first publish attempt has a broker to talk to.
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Production"
+      ASPNETCORE_HTTP_PORTS: "8080"
+      # Broker coordinates. "rabbitmq" is the service name, which Docker's embedded DNS
+      # resolves on the shared network below.
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: "${RABBITMQ_DEFAULT_USER:-guest}"
+      RabbitMq__Password: "${RABBITMQ_DEFAULT_PASS:-guest}"
+      # Interval between result batches, as a TimeSpan. Quoted so YAML keeps it a string.
+      # Shorten it to make a demo run faster; the specified behaviour is five seconds.
+      Search__BatchInterval: "00:00:05"
+    # Reachable inside the compose network as http://searchservice:8080 — the container
+    # port, not the published one. Docker's DNS resolves the service name to this
+    # container, and no port translation happens between containers on the same network,
+    # which is exactly the address the API Gateway is configured with below.
+    expose:
+      - "8080"
+    ports:
+      # Optional convenience only: nothing in the workflow needs the gRPC endpoint to be
+      # reachable from the host. Handy for grpcurl while debugging.
+      - "${SEARCHSERVICE_HTTP_PORT:-5001}:8080"
+    restart: unless-stopped
+    networks:
+      - async-search
+
+  # -------------------------------------------------------------------------------------
+  # API Gateway: the only service published for normal use. POST /searches to start a
+  # search, GET /searches/{searchId} to poll it.
+  # -------------------------------------------------------------------------------------
+  apigateway:
+    build:
+      context: .
+      dockerfile: src/ApiGateway/Dockerfile
+    container_name: asyncsearch-apigateway
+    depends_on:
+      searchservice:
+        # Started is enough here. The gateway's gRPC channel connects lazily on the first
+        # call, so it tolerates a backend that is still warming up.
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Production"
+      ASPNETCORE_HTTP_PORTS: "8080"
+      # Plain http:// on purpose: this is HTTP/2 cleartext (h2c) inside a private network.
+      # The port is the Search Service's container port — see the note on its expose block.
+      Grpc__SearchService: "http://searchservice:8080"
+    ports:
+      - "${APIGATEWAY_HTTP_PORT:-8080}:8080"
+    restart: unless-stopped
+    networks:
+      - async-search
+
+  # -------------------------------------------------------------------------------------
+  # Notification Service: headless worker, consumes the completion event and logs the
+  # SearchId. No ports — it neither serves nor is served.
+  # -------------------------------------------------------------------------------------
+  notificationservice:
+    build:
+      context: .
+      dockerfile: src/NotificationService/Dockerfile
+    container_name: asyncsearch-notificationservice
+    depends_on:
+      rabbitmq:
+        # Same readiness gate as the Search Service: the consumer declares its queue on
+        # startup and needs a live broker to declare it against.
+        condition: service_healthy
+    environment:
+      # A Worker Service runs on the generic host, which reads DOTNET_ENVIRONMENT rather
+      # than ASPNETCORE_ENVIRONMENT.
+      DOTNET_ENVIRONMENT: "Production"
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: "${RABBITMQ_DEFAULT_USER:-guest}"
+      RabbitMq__Password: "${RABBITMQ_DEFAULT_PASS:-guest}"
+    restart: unless-stopped
+    networks:
+      - async-search
+
+# A user-defined bridge network rather than the default one, so the four containers get
+# Docker's embedded DNS and can address each other by service name.
+networks:
+  async-search:
+    name: async-search-net
+    driver: bridge
+
+# Survives "docker compose down" so queued messages and broker state outlive a restart.
+# Use "docker compose down -v" to start from an empty broker.
+volumes:
+  rabbitmq-data:
+    name: async-search-rabbitmq-data
