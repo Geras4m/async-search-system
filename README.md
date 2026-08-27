@@ -534,10 +534,25 @@ dotnet test tests/UnitTests/UnitTests.csproj \
   --collect:"XPlat Code Coverage" --settings tests/coverlet.runsettings
 ```
 
-Combining both suites gives **77% line coverage** of hand-written code. It is not uniform, and the
-shape is deliberate: the application layer, the messaging infrastructure and the Notification
-Service consumer are at or near 100%, while the API Gateway sits lower because its Swagger wiring
-and several `Program.cs` branches are only exercised under `Development`.
+Combining both suites gives **80% line coverage** of hand-written code. It is not uniform, and the
+shape is deliberate — the layers where a bug is silent are the ones covered hardest:
+
+| Assembly | Line coverage |
+| --- | --- |
+| `SearchService.Application` | 100% |
+| `NotificationService` | 100% |
+| `SearchService.Api` | 100% |
+| `Shared.Common` | 100% |
+| `SearchService.Infrastructure` | 97% |
+| `SearchService.Domain` | 76% |
+| `ApiGateway` | 57% |
+| `Shared.GrpcContracts` | 47% |
+
+`SearchService.Infrastructure` holds the outbox, the execution engine and the RabbitMQ publisher,
+which is where a defect would be both easiest to introduce and hardest to notice, so it is covered
+to 97%. The two low numbers are honest rather than alarming: `Shared.GrpcContracts` is almost
+entirely the hand-written `DecimalValue` conversion plus a little glue, and `ApiGateway` carries
+Swagger wiring and several `Program.cs` branches that only execute under `Development`.
 
 ### Running the services on the host
 
