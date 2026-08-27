@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+
+  <!--
+    Coverage settings shared by both test projects. Pass this file to dotnet test with the
+    "settings" option alongside the "collect XPlat Code Coverage" option.
+
+    The exclusions matter. Without them the headline number is dominated by machine written
+    code: the protobuf and gRPC stubs generated from search.proto run to roughly 1,500 lines,
+    and every LoggerMessage partial expands into a generated method body. Counting those as
+    uncovered application code makes the figure meaningless in both directions.
+  -->
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+
+          <!--
+            Everything protoc and the LoggerMessage source generator emit carries
+            GeneratedCodeAttribute. Excluding by attribute rather than by whole assembly keeps
+            the hand written code in Shared.GrpcContracts (DecimalValueExtensions) measured.
+          -->
+          <ExcludeByAttribute>GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
+
+          <!-- Test assemblies do not measure themselves. -->
+          <Exclude>[UnitTests]*,[IntegrationTests]*</Exclude>
+
+          <!-- Trivial get and set accessors are noise, not tested behaviour. -->
+          <SkipAutoProps>true</SkipAutoProps>
+
+          <IncludeTestAssembly>false</IncludeTestAssembly>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+
+</RunSettings>

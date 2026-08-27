@@ -464,6 +464,23 @@ tests are skipped rather than failed:
 DOTNET_ROLL_FORWARD=LatestMajor dotnet test tests/IntegrationTests/IntegrationTests.csproj
 ```
 
+### Coverage
+
+`tests/coverlet.runsettings` excludes everything carrying `GeneratedCodeAttribute` — the ~1,500
+lines of protobuf and gRPC stubs generated from `search.proto`, and the bodies the
+`[LoggerMessage]` source generator emits. Counting machine-written code would make the headline
+number meaningless in both directions.
+
+```bash
+dotnet test tests/UnitTests/UnitTests.csproj \
+  --collect:"XPlat Code Coverage" --settings tests/coverlet.runsettings
+```
+
+Combining both suites gives **77% line coverage** of hand-written code. It is not uniform, and the
+shape is deliberate: the application layer, the messaging infrastructure and the Notification
+Service consumer are at or near 100%, while the API Gateway sits lower because its Swagger wiring
+and several `Program.cs` branches are only exercised under `Development`.
+
 ### Running the services on the host
 
 `Development` configuration points every service at `localhost`, so a broker has to be listening on
