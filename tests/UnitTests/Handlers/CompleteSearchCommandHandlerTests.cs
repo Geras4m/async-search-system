@@ -14,9 +14,10 @@ using Xunit;
 namespace UnitTests.Handlers;
 
 /// <summary>
-/// Completion is the step the rest of the system reacts to. It has to flip the flag, persist
-/// that fact before announcing it, and announce it exactly once no matter how often the command
-/// is replayed.
+/// Completion is the step the rest of the system reacts to. It has to flip the flag, persist that
+/// fact before announcing it, and announce it exactly once no matter how often the command is
+/// replayed. Since the outbox arrived it also has to record the obligation to publish before it
+/// attempts the publish, and hold on to that record until the broker has actually taken the event.
 /// </summary>
 public sealed class CompleteSearchCommandHandlerTests
 {
@@ -25,6 +26,7 @@ public sealed class CompleteSearchCommandHandlerTests
 
     private readonly ISearchRepository _repository = Substitute.For<ISearchRepository>();
     private readonly ISearchEventsPublisher _publisher = Substitute.For<ISearchEventsPublisher>();
+    private readonly ISearchEventOutbox _outbox = Substitute.For<ISearchEventOutbox>();
     private readonly IClock _clock = Substitute.For<IClock>();
     private readonly CompleteSearchCommandHandler _handler;
 
@@ -37,6 +39,7 @@ public sealed class CompleteSearchCommandHandlerTests
         _handler = new CompleteSearchCommandHandler(
             _repository,
             _publisher,
+            _outbox,
             _clock,
             NullLogger<CompleteSearchCommandHandler>.Instance);
     }
@@ -110,49 +113,135 @@ public sealed class CompleteSearchCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_ForTheSameSearchTwice_PublishesNothingTheSecondTime()
+    public async Task Handle_WithARunningSearch_EnqueuesTheEventBeforeAttemptingToPublishIt()
     {
         // Arrange
+        // The obligation has to be recorded first. Enqueuing only after a failed publish would
+        // leave a window in which a crash loses the event, which is the exact hole the outbox
+        // exists to close.
         Guid searchId = Guid.NewGuid();
         GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
 
         // Act
-        await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
         await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
 
         // Assert
-        await _publisher.Received(1).PublishSearchCompletedAsync(
-            Arg.Any<SearchCompletedEvent>(),
-            Arg.Any<CancellationToken>());
-        await _repository.Received(1).UpdateAsync(Arg.Any<Search>(), Arg.Any<CancellationToken>());
+        // CA2012 is suppressed for the block below rather than worked around: inside
+        // Received.InOrder a call is not an operation but a description of one already recorded,
+        // so the ValueTask it hands back is a matching artefact with nothing to await.
+#pragma warning disable CA2012
+        Received.InOrder(() =>
+        {
+            _outbox.EnqueueAsync(Arg.Any<SearchCompletedEvent>(), Arg.Any<CancellationToken>());
+            _publisher.PublishSearchCompletedAsync(
+                Arg.Any<SearchCompletedEvent>(),
+                Arg.Any<CancellationToken>());
+        });
+#pragma warning restore CA2012
     }
 
     [Fact]
-    public async Task Handle_WhenThePublisherThrows_RethrowsButLeavesTheSearchPersistedAsCompleted()
+    public async Task Handle_WithARunningSearch_EnqueuesTheSameEventItPublishes()
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
         GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
 
-        var brokerFailure = new InvalidOperationException("Broker unavailable.");
+        SearchCompletedEvent? published = null;
         _publisher
-            .PublishSearchCompletedAsync(Arg.Any<SearchCompletedEvent>(), Arg.Any<CancellationToken>())
-            .ThrowsAsync(brokerFailure);
+            .When(publisher => publisher.PublishSearchCompletedAsync(
+                Arg.Any<SearchCompletedEvent>(),
+                Arg.Any<CancellationToken>()))
+            .Do(call => published = call.Arg<SearchCompletedEvent>());
 
         // Act
-        InvalidOperationException thrown = await Should.ThrowAsync<InvalidOperationException>(
+        await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
+
+        // Assert
+        published.ShouldNotBeNull();
+        published.SearchId.ShouldBe(searchId);
+        published.CompletedAtUtc.ShouldBe(CompletedAtUtc);
+
+        await _outbox.Received(1).EnqueueAsync(published, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_WhenTheInlinePublishSucceeds_RemovesTheOutboxEntry()
+    {
+        // Arrange
+        // Nothing is owed once the broker has the event, so the background publisher must find an
+        // empty outbox and never redeliver it.
+        Guid searchId = Guid.NewGuid();
+        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+
+        // Act
+        await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
+
+        // Assert
+        await _outbox.Received(1).RemoveAsync(searchId, Arg.Any<CancellationToken>());
+
+        Received.InOrder(() =>
+        {
+            _publisher.PublishSearchCompletedAsync(
+                Arg.Any<SearchCompletedEvent>(),
+                Arg.Any<CancellationToken>());
+            _outbox.RemoveAsync(searchId, Arg.Any<CancellationToken>());
+        });
+    }
+
+    [Fact]
+    public async Task Handle_WhenThePublisherThrows_DoesNotPropagateAndLeavesTheEventOwedInTheOutbox()
+    {
+        // Arrange
+        // This is the regression guard for the lost event hole. A broker outage at the moment a
+        // search completes must not fail the command and must not discard the announcement: the
+        // search stays complete, the entry stays owed, and the background publisher retries it.
+        Guid searchId = Guid.NewGuid();
+        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+
+        _publisher
+            .PublishSearchCompletedAsync(Arg.Any<SearchCompletedEvent>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("Broker unavailable."));
+
+        // Act
+        await Should.NotThrowAsync(
             () => _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None));
 
         // Assert
-        thrown.ShouldBeSameAs(brokerFailure);
-
         _persisted.ShouldNotBeNull();
         _persisted.IsCompleted.ShouldBeTrue();
         _persisted.CompletedAtUtc.ShouldBe(CompletedAtUtc);
+
+        await _outbox.Received(1).EnqueueAsync(
+            Arg.Is<SearchCompletedEvent>(completed => completed.SearchId == searchId),
+            Arg.Any<CancellationToken>());
+
+        await _outbox.DidNotReceive().RemoveAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task Handle_WithAnUnknownSearchId_ThrowsSearchNotFoundExceptionAndPublishesNothing()
+    public async Task Handle_ForTheSameSearchTwice_PublishesAndEnqueuesNothingTheSecondTime()
+    {
+        // Arrange
+        Guid searchId = Guid.NewGuid();
+        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+
+        // Act
+        await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
+        await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
+
+        // Assert
+        await _repository.Received(1).UpdateAsync(Arg.Any<Search>(), Arg.Any<CancellationToken>());
+        await _publisher.Received(1).PublishSearchCompletedAsync(
+            Arg.Any<SearchCompletedEvent>(),
+            Arg.Any<CancellationToken>());
+        await _outbox.Received(1).EnqueueAsync(
+            Arg.Any<SearchCompletedEvent>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_WithAnUnknownSearchId_ThrowsSearchNotFoundExceptionAndTouchesNothing()
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
@@ -168,10 +257,13 @@ public sealed class CompleteSearchCommandHandlerTests
         await _publisher.DidNotReceive().PublishSearchCompletedAsync(
             Arg.Any<SearchCompletedEvent>(),
             Arg.Any<CancellationToken>());
+        await _outbox.DidNotReceive().EnqueueAsync(
+            Arg.Any<SearchCompletedEvent>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task Handle_WithARunningSearch_ForwardsTheCancellationTokenToBothCollaborators()
+    public async Task Handle_WithARunningSearch_ForwardsTheCancellationTokenToEveryCollaborator()
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
@@ -183,9 +275,11 @@ public sealed class CompleteSearchCommandHandlerTests
 
         // Assert
         await _repository.Received(1).UpdateAsync(Arg.Any<Search>(), cancellation.Token);
+        await _outbox.Received(1).EnqueueAsync(Arg.Any<SearchCompletedEvent>(), cancellation.Token);
         await _publisher.Received(1).PublishSearchCompletedAsync(
             Arg.Any<SearchCompletedEvent>(),
             cancellation.Token);
+        await _outbox.Received(1).RemoveAsync(searchId, cancellation.Token);
     }
 
     [Fact]

@@ -62,9 +62,12 @@ public static class DependencyInjection
             // throw on every batch, and a negative interval makes Task.Delay throw before
             // the first batch is ever appended. Failing fast is the whole point of
             // ValidateOnStart, so the checks belong here.
+            // Note the "less than or equal": Random.Shared.Next(min, max) accepts min == max and
+            // simply returns min, so an equal-bounds configuration is a valid fixed price rather
+            // than a mistake. Rejecting it would fail start-up for something the code handles.
             .Validate(
-                options => options.MinHotelPrice < options.MaxHotelPrice,
-                $"{SearchExecutionOptions.SectionName}:MinHotelPrice must be less than "
+                options => options.MinHotelPrice <= options.MaxHotelPrice,
+                $"{SearchExecutionOptions.SectionName}:MinHotelPrice must not be greater than "
                     + $"{SearchExecutionOptions.SectionName}:MaxHotelPrice.")
             .Validate(
                 options => options.BatchInterval >= TimeSpan.Zero,
@@ -83,8 +86,21 @@ public static class DependencyInjection
                 $"{RabbitMqOptions.SectionName}:RetryDelay must not be negative.")
             .ValidateOnStart();
 
+        services
+            .AddOptions<SearchEventOutboxOptions>()
+            .Bind(configuration.GetSection(SearchEventOutboxOptions.SectionName))
+            .ValidateDataAnnotations()
+            .Validate(
+                options => options.PollInterval > TimeSpan.Zero,
+                $"{SearchEventOutboxOptions.SectionName}:PollInterval must be greater than zero.")
+            .ValidateOnStart();
+
         services.AddSingleton<ISearchRepository, InMemorySearchRepository>();
         services.AddSingleton<IHotelResultGenerator, SequentialHotelResultGenerator>();
+
+        // Singleton because it IS the store: the completion handler writes to it and the
+        // background publisher drains it, and they must see the same instance.
+        services.AddSingleton<ISearchEventOutbox, InMemorySearchEventOutbox>();
 
         // Registered once as the concrete type and then exposed through the abstraction, so
         // both sides of the hand-off resolve the very same channel.
@@ -96,6 +112,7 @@ public static class DependencyInjection
         services.AddSingleton<ISearchEventsPublisher, RabbitMqSearchEventsPublisher>();
 
         services.AddHostedService<SearchExecutionBackgroundService>();
+        services.AddHostedService<SearchEventOutboxPublisherBackgroundService>();
 
         return services;
     }

@@ -14,15 +14,25 @@ namespace SearchService.Application.Handlers;
 /// </summary>
 /// <param name="repository">Persistence boundary for the search aggregate.</param>
 /// <param name="eventsPublisher">Outbound messaging boundary for search domain events.</param>
+/// <param name="outbox">Records events that still owe a delivery to the broker.</param>
 /// <param name="clock">Supplies the completion timestamp.</param>
 /// <param name="logger">Sink for structured log records.</param>
 /// <remarks>
+/// <para>
 /// Completing an already completed search is a no-op: the state is not rewritten and the event is
 /// not published again, so a retried or duplicated command cannot fan out duplicate notifications.
+/// </para>
+/// <para>
+/// Delivery of the event is at-least-once, not best-effort. The intent to publish is recorded in
+/// the outbox before the broker is contacted, so a publish that fails is retried in the background
+/// rather than lost. The inline publish is an optimisation for the common case: it removes the
+/// outbox entry on success, so a healthy system never waits for a sweep.
+/// </para>
 /// </remarks>
 public sealed partial class CompleteSearchCommandHandler(
     ISearchRepository repository,
     ISearchEventsPublisher eventsPublisher,
+    ISearchEventOutbox outbox,
     IClock clock,
     ILogger<CompleteSearchCommandHandler> logger)
     : IRequestHandler<CompleteSearchCommand>
@@ -58,20 +68,30 @@ public sealed partial class CompleteSearchCommandHandler(
 
         LogSearchCompleted(logger, request.SearchId);
 
+        var completedEvent = new SearchCompletedEvent(search.Id, completedAtUtc);
+
+        // Record the obligation before attempting it. This ordering is the whole point of the
+        // outbox: if the process dies or the broker is unreachable between here and the publish
+        // below, the event is still owed and the background publisher will deliver it. Enqueuing
+        // after a successful publish instead would leave exactly the gap this closes.
+        await outbox.EnqueueAsync(completedEvent, cancellationToken);
+
         try
         {
-            await eventsPublisher.PublishSearchCompletedAsync(
-                new SearchCompletedEvent(search.Id, completedAtUtc),
-                cancellationToken);
+            await eventsPublisher.PublishSearchCompletedAsync(completedEvent, cancellationToken);
         }
         catch (Exception exception)
         {
-            // The search stays completed; only the announcement failed. Surfaced to the caller so
-            // the failure is visible rather than silently swallowed, and logged with the identifier
-            // so the affected search can be found in the logs.
-            LogEventPublishFailed(logger, request.SearchId, exception);
-            throw;
+            // Deliberately not rethrown. The search is complete and the event is safely owed, so
+            // this is a deferral rather than a failure, and letting it propagate would mark the
+            // whole search execution as failed for something that will resolve itself. Logged at
+            // Warning because a persistently unhealthy broker still needs to be visible.
+            LogEventPublishDeferred(logger, request.SearchId, exception);
+            return;
         }
+
+        // Delivered inline, so nothing is owed any more.
+        await outbox.RemoveAsync(request.SearchId, cancellationToken);
     }
 
     [LoggerMessage(
@@ -88,7 +108,7 @@ public sealed partial class CompleteSearchCommandHandler(
 
     [LoggerMessage(
         EventId = 1005,
-        Level = LogLevel.Error,
-        Message = "Publishing the search completed event failed. SearchId={SearchId}")]
-    private static partial void LogEventPublishFailed(ILogger logger, Guid searchId, Exception exception);
+        Level = LogLevel.Warning,
+        Message = "Publishing the search completed event failed; it stays in the outbox for retry. SearchId={SearchId}")]
+    private static partial void LogEventPublishDeferred(ILogger logger, Guid searchId, Exception exception);
 }

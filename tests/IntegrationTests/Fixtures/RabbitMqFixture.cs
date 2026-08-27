@@ -1,3 +1,4 @@
+using System.Globalization;
 using Testcontainers.RabbitMq;
 using Xunit;
 
@@ -84,6 +85,53 @@ public sealed class RabbitMqFixture : IAsyncLifetime
                 SkipReason.Length == 0 ? "The broker container was never started." : SkipReason);
 
     /// <summary>
+    /// Takes the broker down, so a test can observe what the services do during an outage.
+    /// </summary>
+    /// <param name="cancellationToken">Token that abandons the operation.</param>
+    /// <returns>A task that completes once the broker has stopped accepting connections.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// No broker is running, or the command failed inside the container.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The broker application is stopped inside the container rather than the container itself
+    /// being stopped, and that distinction matters. Testcontainers publishes the AMQP port on a
+    /// host port chosen by the daemon, and stopping and starting the container makes the daemon
+    /// choose again: the container comes back on a different host port. Every service already
+    /// configured with the old endpoint would then be pointed at nothing, which is a different
+    /// failure from the one under test and one no amount of retrying can recover from.
+    /// </para>
+    /// <para>
+    /// Stopping the application closes the AMQP listener and drops every open connection while
+    /// the container, and therefore the published port, stays exactly where it was. Clients see
+    /// connections refused, which is what a broker outage looks like from the outside, and the
+    /// durable topology survives in the node's own storage ready for
+    /// <see cref="StartBrokerAsync"/>.
+    /// </para>
+    /// <para>
+    /// Callers must restore the broker before finishing, including on failure: the container is
+    /// shared by the whole suite.
+    /// </para>
+    /// </remarks>
+    public Task StopBrokerAsync(CancellationToken cancellationToken = default) =>
+        ControlBrokerAsync("stop_app", cancellationToken);
+
+    /// <summary>
+    /// Brings the broker back up after <see cref="StopBrokerAsync"/>.
+    /// </summary>
+    /// <param name="cancellationToken">Token that abandons the operation.</param>
+    /// <returns>A task that completes once the broker accepts connections again.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// No broker is running, or the command failed inside the container.
+    /// </exception>
+    /// <remarks>
+    /// The endpoint is unchanged, and durable exchanges, queues, bindings and the persistent
+    /// messages they hold are all still there.
+    /// </remarks>
+    public Task StartBrokerAsync(CancellationToken cancellationToken = default) =>
+        ControlBrokerAsync("start_app", cancellationToken);
+
+    /// <summary>
     /// Starts the broker container, or records why it could not be started.
     /// </summary>
     /// <returns>A task that completes once the broker is ready or has been given up on.</returns>
@@ -136,6 +184,33 @@ public sealed class RabbitMqFixture : IAsyncLifetime
         {
             await _container.DisposeAsync();
             _container = null;
+        }
+    }
+
+    /// <summary>
+    /// Runs one <c>rabbitmqctl</c> subcommand inside the broker container.
+    /// </summary>
+    /// <param name="command">Subcommand to run.</param>
+    /// <param name="cancellationToken">Token that abandons the operation.</param>
+    /// <returns>A task that completes once the command has finished.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// No broker is running, or the command reported a non-zero exit code.
+    /// </exception>
+    private async Task ControlBrokerAsync(string command, CancellationToken cancellationToken)
+    {
+        if (_container is null)
+        {
+            throw new InvalidOperationException(
+                SkipReason.Length == 0 ? "The broker container was never started." : SkipReason);
+        }
+
+        var result = await _container.ExecAsync(["rabbitmqctl", command], cancellationToken);
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(string.Create(
+                CultureInfo.InvariantCulture,
+                $"'rabbitmqctl {command}' failed inside the broker container with exit code {result.ExitCode}: {result.Stderr}"));
         }
     }
 }

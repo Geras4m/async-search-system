@@ -249,7 +249,7 @@ becomes a build error rather than a code-review comment.
 | Project | References | Consequence |
 | --- | --- | --- |
 | `SearchService.Domain` | nothing: no project references, no NuGet packages | the domain model cannot accidentally learn about MediatR, RabbitMQ, gRPC or ASP.NET Core |
-| `SearchService.Application` | `SearchService.Domain`, `Shared.Common`, `Shared.EventContracts` | use cases depend on the domain and on abstractions they declare themselves (`ISearchRepository`, `ISearchEventsPublisher`, `IHotelResultGenerator`, `ISearchExecutionScheduler`, `IClock`) |
+| `SearchService.Application` | `SearchService.Domain`, `Shared.Common`, `Shared.EventContracts` | use cases depend on the domain and on abstractions they declare themselves (`ISearchRepository`, `ISearchEventsPublisher`, `ISearchEventOutbox`, `IHotelResultGenerator`, `ISearchExecutionScheduler`, `IClock`) |
 | `SearchService.Infrastructure` | `SearchService.Application`, `SearchService.Domain` | implementations depend on the abstractions, never the reverse; the broker client lives here and only here |
 | `SearchService.Api` | `SearchService.Application`, `SearchService.Infrastructure`, `Shared.GrpcContracts` | the host is the only project allowed to know both the use cases and their implementations, because it is the composition root |
 
@@ -341,7 +341,62 @@ handling failure is requeued.
 
 Completion is persisted *before* the event is published, so a broker outage can never leave a search
 stuck in the running state — the flag clients poll for is the source of truth, and the event only
-announces it.
+announces it. That ordering buys one guarantee at the cost of another, and the outbox below is what
+pays for it.
+
+### An outbox, because completion and its announcement are two separate writes
+
+Persisting completion first means the two facts that have to agree — the completed flag and the
+event announcing it — are written to two different places with nothing linking them. Before the
+outbox, a broker outage at exactly that instant left the search correctly marked complete and the
+announcement gone for good: the repository held the new state, the publish threw, and nothing
+anywhere remembered that a delivery was still owed. Publishing was at-most-once, and the loss was
+silent — `isCompleted` was `true`, so from the client's side nothing had gone wrong, while the
+Notification Service simply never heard.
+
+`ISearchEventOutbox` is the missing link. `CompleteSearchCommandHandler` persists the completed
+state, enqueues the `SearchCompletedEvent` in the outbox, attempts an inline publish, and removes
+the entry once the broker has acknowledged it. If that publish throws, the handler logs at
+`Warning` and returns; it does not rethrow, because the search is complete and the delivery is owed
+rather than failed, and failing the whole execution over something that resolves itself would
+misreport what happened. `SearchEventOutboxPublisherBackgroundService` sweeps the outbox every
+`Outbox:PollInterval` and retries up to `Outbox:BatchSize` events per sweep until the broker takes
+them. On the happy path the sweep finds nothing, because the inline publish already removed the
+entry — the outbox costs a healthy system one dictionary insert and one removal, and earns its
+keep only during an outage.
+
+**The enqueue has to happen before the publish attempt.** That single ordering is the whole pattern.
+Enqueue first and the worst case is an event delivered twice; publish first and enqueue afterwards
+and the worst case is an event never delivered at all, which is precisely the hole being closed,
+reopened one line lower. A process death or a broker outage between the enqueue and the publish
+leaves the obligation recorded, and a recorded obligation is the only state recovery can start from.
+
+The price is that delivery is at-least-once, not exactly-once: a publish that reached the broker but
+failed on the way back leaves the entry in place and the next sweep sends it again. Consumers have
+to be idempotent. The Notification Service is, structurally — it logs the `SearchId` and holds no
+state of its own, so a redelivered event costs one duplicate log line and nothing more.
+
+There is a second, narrower way to earn a duplicate, worth naming because it is a property of these
+particular defaults rather than of the pattern. The outbox entry is written before the inline
+publish and removed after it, so it is visible to a sweep for however long that publish takes. A
+publish is bounded at ten seconds while sweeps run every five, so a *slow but ultimately successful*
+publish — which in practice means a degraded broker — can be swept and sent a second time before the
+first attempt returns. Nothing is corrupted: the two publishes serialise behind the same gate and
+the consumer is idempotent. Raising `Outbox__PollInterval` above the publish deadline narrows the
+window at the cost of slower recovery. Closing it properly needs a lease, where a sweep claims an
+entry for a visibility period instead of merely reading it; that is the natural next step for a
+database-backed outbox and is deliberately not built here, because it buys nothing an idempotent
+consumer does not already provide.
+
+Two limits worth stating plainly. `InMemorySearchEventOutbox` is a `ConcurrentDictionary` keyed by
+`SearchId`, registered as a singleton so the completion handler and the background publisher share
+one store; keying by identifier makes `EnqueueAsync` idempotent for free, so a retried command
+cannot queue a second delivery. It matches the in-memory repository and carries the same caveat: a
+process restart loses every event that had not yet been delivered. And the two writes are still two
+writes — the repository update and the outbox insert are separate operations, so a crash between
+them loses the event just as before. A real deployment writes the outbox row in the same transaction
+as the aggregate, which is what turns the pattern into an actual guarantee. Fixing either is a
+change to Infrastructure alone; the Application layer knows only the interface.
 
 ### Source-generated logging
 
@@ -361,9 +416,10 @@ mandates: `BatchCount = 6`, `HotelsPerBatch = 5`, `BatchInterval = 00:00:05`. Th
 rather than constants so that automated tests can compress a 30 second workflow into a fraction of a
 second — set `Search__BatchInterval=00:00:00.05` and the same six-batch behaviour is observable in
 under a second, without changing production behaviour or the code under test. The same knob makes a
-live demo as fast or as slow as you want it. Both option types are validated with data annotations
-and `ValidateOnStart`, so a mistyped interval or an out-of-range port stops the host immediately
-with a precise message instead of failing halfway through a search.
+live demo as fast or as slow as you want it. Every options type the Search Service binds —
+execution, broker and outbox — is validated with data annotations and `ValidateOnStart`, so a
+mistyped interval or an out-of-range port stops the host immediately with a precise message instead
+of failing halfway through a search.
 
 ## Configuration
 
@@ -394,6 +450,8 @@ property of the `RabbitMq` section in `appsettings.json`. Deeper nesting works t
 | `Search__MaxConcurrentSearches` | Search Service | `64` | searches the engine executes concurrently |
 | `Search__MinHotelPrice` | Search Service | `80` | lowest generated price, inclusive |
 | `Search__MaxHotelPrice` | Search Service | `400` | highest generated price, exclusive |
+| `Outbox__PollInterval` | Search Service | `00:00:05` | delay between sweeps of the event outbox, as a `TimeSpan`; must be greater than zero. It governs recovery latency after a broker outage, not normal notification latency, because a healthy completion publishes inline |
+| `Outbox__BatchSize` | Search Service | `50` | most events one sweep attempts, so a backlog drains over several sweeps instead of one burst |
 
 Compose reads a further set from an optional `.env` file next to `docker-compose.yml`. Copying
 `.env.example` is optional — every reference in the Compose file carries a default — and these
@@ -545,20 +603,38 @@ docker compose ps
 docker compose logs rabbitmq | tail -n 20
 ```
 
-**A search completes but no notification arrives.** Look for `Failed to publish the search completed
-event.` in `docker compose logs searchservice`. Completion is persisted before publication, so
-`isCompleted` can legitimately be `true` while the announcement failed; in that case the broker is
-the thing to inspect, in the management UI at `http://localhost:15672`.
+**A search completes but no notification arrives.** The event is owed, not lost. In `docker compose
+logs searchservice`, look for the Warning `Publishing the search completed event failed; it stays in
+the outbox for retry. SearchId=<guid>`; the publisher records the underlying cause immediately above
+it as `Failed to publish the search completed event. SearchId=<guid> Exchange=search.completed`.
+Completion is persisted before publication, so `isCompleted` is legitimately `true` while this is
+going on, and the thing to inspect is the broker, in the management UI at `http://localhost:15672`.
 
-This is deliberate and it degrades in a specific way. Publishing is bounded by a ten second
-deadline, and a breach is reported as `System.TimeoutException: Publishing the search completed
-event for search '<guid>' did not complete within 00:00:10.` The bound matters because the publish
-holds a slot in the execution engine: without it, a single unreachable broker could pin enough
-slots to stop new searches being picked up at all. With it, stopping the broker mid-run leaves
-searches still accumulating all six batches and still reaching `isCompleted: true` — only the
-announcement is lost. Publishing also uses publisher confirms, so `Event published.` means the
-broker acknowledged the message rather than merely that it was written to a socket. Recovery needs
-no restart: the publisher discards the dead channel and reconnects on the next completion.
+Then wait for a sweep rather than restarting anything. The outbox publisher announces itself at
+start-up with `Search event outbox publisher started. PollInterval=00:00:05 BatchSize=50` and
+retries on that interval. While the broker is still down, each sweep that had work and could not
+finish it logs `Outbox sweep stopped early; the broker is still unhealthy. Delivered=<n> Pending=<n>`
+once — one record per sweep, not one per event. Once the broker is back, that `SearchId` appears
+as `Event published. SearchId=<guid>` (twice, in fact: once from the publisher and once from the
+sweep that drove it), and `docker compose logs notificationservice` then shows the usual
+`Search completed event received. SearchId=<guid> CompletedAtUtc=<timestamp>`. Stopping the broker
+mid-run, letting a search finish, and starting the broker again is the whole test, and the
+notification lands within a poll interval of the recovery.
+
+This degrades in a specific way. Publishing is bounded by a ten second deadline, and a breach is
+reported as `System.TimeoutException: Publishing the search completed event for search '<guid>' did
+not complete within 00:00:10. The broker is unreachable or not responding.` The bound matters
+because the publish holds a slot in the execution engine: without it, a single unreachable broker
+could pin enough slots to stop new searches being picked up at all. With it, stopping the broker
+mid-run leaves searches still accumulating all six batches and still reaching `isCompleted: true`,
+with their announcements queued in the outbox instead of dropped. Publishing also uses publisher
+confirms, so `Event published.` means the broker acknowledged the message rather than merely that it
+was written to a socket. Recovery needs no restart: the publisher discards the dead channel and
+reconnects on the next attempt, inline or from a sweep.
+
+The one case still not covered is a restart of the Search Service itself. The outbox is in memory,
+matching the in-memory repository, so undelivered events do not survive the process — no more than
+the searches they belong to do.
 
 **Reset broker state.** The `async-search-rabbitmq-data` volume outlives `docker compose down`, so
 queued messages, the declared topology and the seeded credentials all survive a restart. To start

@@ -31,6 +31,13 @@ try
         .AddOptions<RabbitMqOptions>()
         .Bind(builder.Configuration.GetSection(RabbitMqOptions.SectionName))
         .ValidateDataAnnotations()
+
+        // Data annotations cannot express this one, and it matters for the same reason it does
+        // on the publishing side: a negative delay throws out of Task.Delay inside the connection
+        // retry ladder, turning a recoverable broker outage into a hard start-up failure.
+        .Validate(
+            options => options.RetryDelay >= TimeSpan.Zero,
+            $"{RabbitMqOptions.SectionName}:RetryDelay must not be negative.")
         .ValidateOnStart();
 
     // One connection for the whole process; the consumer multiplexes a channel over it.

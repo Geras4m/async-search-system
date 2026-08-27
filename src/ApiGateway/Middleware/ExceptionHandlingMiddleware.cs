@@ -34,6 +34,12 @@ public sealed partial class ExceptionHandlingMiddleware(
     IHostEnvironment environment,
     ILogger<ExceptionHandlingMiddleware> logger) : IMiddleware
 {
+    /// <summary>
+    /// Non-standard status used by nginx and widely understood in logs to mean the client
+    /// disconnected before a response could be sent.
+    /// </summary>
+    private const int ClientClosedRequestStatusCode = 499;
+
     /// <summary>Media type mandated by RFC 7807.</summary>
     private const string ProblemJsonContentType = "application/problem+json";
 
@@ -67,6 +73,7 @@ public sealed partial class ExceptionHandlingMiddleware(
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
         {
             // The caller went away. There is nobody left to answer, so this is not a failure.
+            MarkClientClosedRequest(context);
             LogRequestAborted(logger, context.Request.Method, context.Request.Path.Value);
         }
         catch (RpcException rpcException)
@@ -79,6 +86,7 @@ public sealed partial class ExceptionHandlingMiddleware(
             // above does not catch it. Without this it would fall through to the generic mapping
             // and be reported as a 504 at Error level, blaming the Search Service for a timeout
             // that never happened and putting noise in the logs every time somebody closes a tab.
+            MarkClientClosedRequest(context);
             LogRequestAborted(logger, context.Request.Method, context.Request.Path.Value);
         }
         catch (Exception exception)
@@ -95,6 +103,26 @@ public sealed partial class ExceptionHandlingMiddleware(
             }
 
             await WriteProblemDetailsAsync(context, exception);
+        }
+    }
+
+    /// <summary>
+    /// Records an aborted request as 499 Client Closed Request so request logging does not count
+    /// it as a success.
+    /// </summary>
+    /// <param name="context">The request being abandoned.</param>
+    /// <remarks>
+    /// Nothing is sent: the connection is already gone, and the status exists purely so the
+    /// request log carries an honest outcome. Leaving it at the default 200 would report a poll
+    /// the client never received as having succeeded, which quietly corrupts any success-rate
+    /// metric built on those logs. 499 is the widely used non-standard code for this case; it is
+    /// only ever written locally, never negotiated with a client.
+    /// </remarks>
+    private static void MarkClientClosedRequest(HttpContext context)
+    {
+        if (!context.Response.HasStarted)
+        {
+            context.Response.StatusCode = ClientClosedRequestStatusCode;
         }
     }
 
@@ -299,6 +327,7 @@ public sealed partial class ExceptionHandlingMiddleware(
     /// <param name="statusCode">Status code the caller receives.</param>
     /// <param name="reason">Short description of the failure.</param>
     /// <param name="exception">The failure being reported.</param>
+
     [LoggerMessage(
         EventId = 3002,
         Message = "Request failed. Method={Method} Path={Path} StatusCode={StatusCode} Reason={Reason}")]
