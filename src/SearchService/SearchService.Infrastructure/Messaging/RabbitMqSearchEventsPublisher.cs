@@ -100,10 +100,20 @@ public sealed partial class RabbitMqSearchEventsPublisher(
 
         CancellationToken publishToken = publishTimeout.Token;
 
-        await _publishGate.WaitAsync(publishToken).ConfigureAwait(false);
+        // Acquiring the gate is inside the try, and tracked, for two reasons. Waiting for the
+        // gate is one of the places the deadline can fire — under contention it is the most
+        // likely one — so it has to be covered by the same translation and logging as the
+        // publish itself, or the common failure surfaces as a bare "operation was canceled"
+        // with no mention of the broker. The flag is what keeps the finally honest: when the
+        // wait is the thing that failed, the semaphore was never taken and releasing it would
+        // corrupt the count and let two publishers onto one channel.
+        bool gateAcquired = false;
 
         try
         {
+            await _publishGate.WaitAsync(publishToken).ConfigureAwait(false);
+            gateAcquired = true;
+
             IChannel channel = await GetOrOpenChannelAsync(publishToken).ConfigureAwait(false);
 
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(completedEvent, EventSerialization.Options);
@@ -138,7 +148,13 @@ public sealed partial class RabbitMqSearchEventsPublisher(
 
             LogPublishFailed(timeout, completedEvent.SearchId, MessagingConstants.SearchCompletedExchange);
 
-            await DiscardChannelAsync().ConfigureAwait(false);
+            // Only touch the channel while holding the gate. A publisher that timed out while
+            // still queued never owned it, and discarding it from here would race the
+            // publisher that does.
+            if (gateAcquired)
+            {
+                await DiscardChannelAsync().ConfigureAwait(false);
+            }
 
             throw timeout;
         }
@@ -147,14 +163,20 @@ public sealed partial class RabbitMqSearchEventsPublisher(
             LogPublishFailed(ex, completedEvent.SearchId, MessagingConstants.SearchCompletedExchange);
 
             // The channel may be unusable after a failed publish, so drop it and let the next
-            // attempt open and re-declare a fresh one.
-            await DiscardChannelAsync().ConfigureAwait(false);
+            // attempt open and re-declare a fresh one. Same ownership rule as above.
+            if (gateAcquired)
+            {
+                await DiscardChannelAsync().ConfigureAwait(false);
+            }
 
             throw;
         }
         finally
         {
-            _publishGate.Release();
+            if (gateAcquired)
+            {
+                _publishGate.Release();
+            }
         }
     }
 
