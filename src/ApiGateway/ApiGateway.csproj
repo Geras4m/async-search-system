@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>ApiGateway</RootNamespace>
+    <UserSecretsId>apigateway-7c2b915e-3d84-4a6f-9e10-2b8c4d6f0a75</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grpc.Net.ClientFactory" />
+    <PackageReference Include="FluentValidation" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" />
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Enrichers.Environment" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\Shared.Common\Shared.Common.csproj" />
+    <ProjectReference Include="..\Shared\Shared.GrpcContracts\Shared.GrpcContracts.csproj" />
+  </ItemGroup>
+</Project>

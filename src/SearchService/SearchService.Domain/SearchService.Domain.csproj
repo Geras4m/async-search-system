@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>SearchService.Domain</RootNamespace>
+  </PropertyGroup>
+  <!--
+    The Domain layer is deliberately dependency-free: no NuGet packages and no project
+    references. Nothing here knows about gRPC, RabbitMQ, MediatR or ASP.NET Core.
+  -->
+</Project>

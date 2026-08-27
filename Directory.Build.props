@@ -1,0 +1,38 @@
+<Project>
+
+  <!--
+    Shared MSBuild settings for every project in the solution.
+    Test projects relax some of these via tests/Directory.Build.props.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- Treat code quality seriously: analyzers on, warnings fail the build. -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+
+    <!-- Public API is documented; missing XML comments surface as build warnings. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!--
+      CA1716: the solution layout mandated by the specification puts the cross-service
+      contracts under a "Shared" root namespace. CA1716 objects because "Shared" is a
+      reserved word in Visual Basic. This is a C#-only solution with no cross-language
+      consumers, so the structure wins over the rule.
+    -->
+    <NoWarn>$(NoWarn);CA1716</NoWarn>
+
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+
+    <IsPackable>false</IsPackable>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

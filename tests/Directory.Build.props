@@ -1,0 +1,15 @@
+<Project>
+
+  <!-- Inherit the repo-wide settings first. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+
+    <!-- Test code does not need public XML documentation. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CA1707;CA2007;CA1861;CA1515</NoWarn>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+option csharp_namespace = "Shared.GrpcContracts";
+
+package search.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Contract between the API Gateway (client) and the Search Service (server).
+// This is the only transport allowed between those two components.
+service SearchGrpcService {
+  // Registers a new search and returns immediately with its identifier.
+  // Result generation continues asynchronously inside the Search Service.
+  rpc StartSearch (StartSearchRequest) returns (StartSearchResponse);
+
+  // Returns everything accumulated for a search so far, plus the completion flag.
+  rpc GetSearchResults (GetSearchResultsRequest) returns (GetSearchResultsResponse);
+}
+
+message StartSearchRequest {
+  // Destination to search hotels for, for example "Paris".
+  string destination = 1;
+}
+
+message StartSearchResponse {
+  // Identifier the client polls with. String form of a UUID.
+  string search_id = 1;
+}
+
+message GetSearchResultsRequest {
+  // String form of the UUID returned by StartSearch.
+  string search_id = 1;
+}
+
+message GetSearchResultsResponse {
+  string search_id = 1;
+  bool is_completed = 2;
+  repeated HotelResult results = 3;
+  google.protobuf.Timestamp created_at_utc = 4;
+}
+
+message HotelResult {
+  string hotel_id = 1;
+  string name = 2;
+  // Money must not be transported as a float. See DecimalValue.
+  DecimalValue price = 3;
+}
+
+// Lossless transport for System.Decimal.
+//
+// Protobuf has no decimal scalar, and `double` silently corrupts monetary values.
+// This is the representation documented by Microsoft for gRPC money: the value is
+// split into a whole part and a nano part, where
+//
+//   value = units + (nanos / 1,000,000,000)
+//
+// `units` and `nanos` must always carry the same sign. For example, -1.75 is
+// encoded as units = -1, nanos = -750,000,000.
+message DecimalValue {
+  // Whole units of the amount.
+  int64 units = 1;
+
+  // Billionths of one unit, in the range [-999,999,999, +999,999,999].
+  sfixed32 nanos = 2;
+}
