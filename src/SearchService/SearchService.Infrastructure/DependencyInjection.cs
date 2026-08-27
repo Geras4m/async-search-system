@@ -55,12 +55,32 @@ public static class DependencyInjection
             .AddOptions<SearchExecutionOptions>()
             .Bind(configuration.GetSection(SearchExecutionOptions.SectionName))
             .ValidateDataAnnotations()
+
+            // Invariants that attributes cannot express. Both of these bind and pass
+            // [Range] happily, and both would break the engine silently at run time rather
+            // than loudly at start-up: an inverted price range makes Random.Shared.Next
+            // throw on every batch, and a negative interval makes Task.Delay throw before
+            // the first batch is ever appended. Failing fast is the whole point of
+            // ValidateOnStart, so the checks belong here.
+            .Validate(
+                options => options.MinHotelPrice < options.MaxHotelPrice,
+                $"{SearchExecutionOptions.SectionName}:MinHotelPrice must be less than "
+                    + $"{SearchExecutionOptions.SectionName}:MaxHotelPrice.")
+            .Validate(
+                options => options.BatchInterval >= TimeSpan.Zero,
+                $"{SearchExecutionOptions.SectionName}:BatchInterval must not be negative.")
             .ValidateOnStart();
 
         services
             .AddOptions<RabbitMqOptions>()
             .Bind(configuration.GetSection(RabbitMqOptions.SectionName))
             .ValidateDataAnnotations()
+
+            // A negative retry delay would throw out of Task.Delay inside the connection
+            // ladder, turning a recoverable broker outage into a hard failure.
+            .Validate(
+                options => options.RetryDelay >= TimeSpan.Zero,
+                $"{RabbitMqOptions.SectionName}:RetryDelay must not be negative.")
             .ValidateOnStart();
 
         services.AddSingleton<ISearchRepository, InMemorySearchRepository>();

@@ -550,6 +550,16 @@ event.` in `docker compose logs searchservice`. Completion is persisted before p
 `isCompleted` can legitimately be `true` while the announcement failed; in that case the broker is
 the thing to inspect, in the management UI at `http://localhost:15672`.
 
+This is deliberate and it degrades in a specific way. Publishing is bounded by a ten second
+deadline, and a breach is reported as `System.TimeoutException: Publishing the search completed
+event for search '<guid>' did not complete within 00:00:10.` The bound matters because the publish
+holds a slot in the execution engine: without it, a single unreachable broker could pin enough
+slots to stop new searches being picked up at all. With it, stopping the broker mid-run leaves
+searches still accumulating all six batches and still reaching `isCompleted: true` — only the
+announcement is lost. Publishing also uses publisher confirms, so `Event published.` means the
+broker acknowledged the message rather than merely that it was written to a socket. Recovery needs
+no restart: the publisher discards the dead channel and reconnects on the next completion.
+
 **Reset broker state.** The `async-search-rabbitmq-data` volume outlives `docker compose down`, so
 queued messages, the declared topology and the seeded credentials all survive a restart. To start
 from an empty broker:

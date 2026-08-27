@@ -131,6 +131,10 @@ public sealed partial class SearchCompletedConsumer(
     {
         try
         {
+            // Shutdown has begun, so do not start handling a message we may not finish.
+            // Leaving it unsettled is the safe choice: the broker redelivers it on next start.
+            cancellationToken.ThrowIfCancellationRequested();
+
             var completedEvent = JsonSerializer.Deserialize<SearchCompletedEvent>(
                 eventArgs.Body.Span,
                 EventSerialization.Options);
@@ -141,14 +145,21 @@ public sealed partial class SearchCompletedConsumer(
                 // it into an event, so it is nacked WITHOUT requeue. Requeueing would put the
                 // same body straight back at the head of the queue and loop forever.
                 LogNullPayloadDiscarded(logger, eventArgs.DeliveryTag);
-                await NackAsync(channel, eventArgs, requeue: false, cancellationToken).ConfigureAwait(false);
+                await NackAsync(channel, eventArgs, requeue: false).ConfigureAwait(false);
                 return;
             }
 
             LogSearchCompletedEventReceived(logger, completedEvent.SearchId, completedEvent.CompletedAtUtc);
 
-            await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, cancellationToken)
-                .ConfigureAwait(false);
+            await AckAsync(channel, eventArgs).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown raced this delivery. It was never settled, so the broker will redeliver
+            // it to the next consumer that starts. That is the at-least-once contract working
+            // as intended; the only thing that would be wrong is letting this escape into the
+            // consumer dispatcher, where it would be swallowed without a trace.
+            LogDeliveryAbandonedDuringShutdown(logger, eventArgs.DeliveryTag);
         }
         catch (JsonException ex)
         {
@@ -156,14 +167,40 @@ public sealed partial class SearchCompletedConsumer(
             // requeue so the broker discards it (or routes it to a dead-letter exchange, where
             // one is configured) instead of redelivering the same broken body to us forever.
             LogDeserializationFailed(logger, ex, eventArgs.DeliveryTag);
-            await NackAsync(channel, eventArgs, requeue: false, cancellationToken).ConfigureAwait(false);
+            await NackAsync(channel, eventArgs, requeue: false).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             // The payload parsed, so the message itself is not at fault. Requeue it and let the
             // broker hand it back for another attempt.
             LogHandlingFailed(logger, ex, eventArgs.DeliveryTag);
-            await NackAsync(channel, eventArgs, requeue: true, cancellationToken).ConfigureAwait(false);
+            await NackAsync(channel, eventArgs, requeue: true).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Acknowledges a delivery, swallowing broker errors so a failure to settle one message
+    /// never escapes into the consumer dispatcher.
+    /// </summary>
+    /// <param name="channel">Channel the delivery arrived on.</param>
+    /// <param name="eventArgs">The delivery being acknowledged.</param>
+    /// <returns>A task that completes once the acknowledgement has been attempted.</returns>
+    /// <remarks>
+    /// Settling deliberately ignores the host's stopping token. The message has already been
+    /// handled and logged; abandoning the acknowledgement because shutdown began would leave
+    /// the broker holding an unacknowledged delivery and cause a duplicate on the next start.
+    /// Writing an ack frame is trivial, so it is allowed to complete.
+    /// </remarks>
+    private async Task AckAsync(IChannel channel, BasicDeliverEventArgs eventArgs)
+    {
+        try
+        {
+            await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogAckFailed(logger, ex, eventArgs.DeliveryTag);
         }
     }
 
@@ -174,20 +211,22 @@ public sealed partial class SearchCompletedConsumer(
     /// <param name="channel">Channel the delivery arrived on.</param>
     /// <param name="eventArgs">The delivery being rejected.</param>
     /// <param name="requeue">Whether the broker should redeliver the message.</param>
-    /// <param name="cancellationToken">Token signalled when the host shuts down.</param>
     /// <returns>A task that completes once the rejection has been attempted.</returns>
+    /// <remarks>
+    /// Like <see cref="AckAsync"/>, settling ignores the host's stopping token so that a
+    /// decision already taken about a message is actually communicated to the broker.
+    /// </remarks>
     private async Task NackAsync(
         IChannel channel,
         BasicDeliverEventArgs eventArgs,
-        bool requeue,
-        CancellationToken cancellationToken)
+        bool requeue)
     {
         try
         {
-            await channel.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue, cancellationToken)
+            await channel.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue, CancellationToken.None)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             LogRejectFailed(logger, ex, eventArgs.DeliveryTag, requeue);
         }
@@ -234,4 +273,23 @@ public sealed partial class SearchCompletedConsumer(
         Level = LogLevel.Information,
         Message = "Stopped consuming search completion events.")]
     private static partial void LogConsumerStopped(ILogger logger);
+
+    /// <summary>Records a delivery abandoned unsettled because the host began shutting down.</summary>
+    /// <param name="logger">Logger the entry is written to.</param>
+    /// <param name="deliveryTag">Broker delivery tag of the abandoned message.</param>
+    [LoggerMessage(
+        EventId = 2010,
+        Level = LogLevel.Information,
+        Message = "Search completed event abandoned unsettled during shutdown; the broker will redeliver it. DeliveryTag={DeliveryTag}")]
+    private static partial void LogDeliveryAbandonedDuringShutdown(ILogger logger, ulong deliveryTag);
+
+    /// <summary>Records a failure to acknowledge a delivery that was handled successfully.</summary>
+    /// <param name="logger">Logger the entry is written to.</param>
+    /// <param name="exception">The failure raised by the broker.</param>
+    /// <param name="deliveryTag">Broker delivery tag of the message.</param>
+    [LoggerMessage(
+        EventId = 2011,
+        Level = LogLevel.Warning,
+        Message = "Failed to acknowledge a handled search completed event; it will be redelivered. DeliveryTag={DeliveryTag}")]
+    private static partial void LogAckFailed(ILogger logger, Exception exception, ulong deliveryTag);
 }

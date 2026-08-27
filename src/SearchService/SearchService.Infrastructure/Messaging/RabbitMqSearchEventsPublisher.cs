@@ -49,6 +49,17 @@ public sealed partial class RabbitMqSearchEventsPublisher(
     private readonly ILogger<RabbitMqSearchEventsPublisher> _logger =
         logger ?? throw new ArgumentNullException(nameof(logger));
 
+    /// <summary>
+    /// Ceiling on a single publish, covering the wait for the publish gate, opening and
+    /// declaring a channel, and the broker's confirmation.
+    /// </summary>
+    /// <remarks>
+    /// A healthy publish is a single round trip. This bound exists for the unhealthy case:
+    /// it stops one publish against an unreachable broker from pinning a process wide gate
+    /// and a search execution slot for the duration of the connection retry ladder.
+    /// </remarks>
+    private static readonly TimeSpan PublishTimeout = TimeSpan.FromSeconds(10);
+
     private readonly SemaphoreSlim _publishGate = new(1, 1);
 
     private IChannel? _channel;
@@ -76,11 +87,24 @@ public sealed partial class RabbitMqSearchEventsPublisher(
         ArgumentNullException.ThrowIfNull(completedEvent);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // Everything below runs under a bounded deadline. This is not belt and braces: the
+        // publish gate is process wide, and opening a channel can walk the connection
+        // provider's whole retry ladder when the broker is unreachable. Without a ceiling a
+        // single unlucky publish would hold both this gate and the execution engine's
+        // concurrency slot for the length of that ladder, and enough of them would stall the
+        // engine. A few seconds is far longer than a healthy publish needs.
+        using CancellationTokenSource publishTimeout =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        publishTimeout.CancelAfter(PublishTimeout);
+
+        CancellationToken publishToken = publishTimeout.Token;
+
+        await _publishGate.WaitAsync(publishToken).ConfigureAwait(false);
 
         try
         {
-            IChannel channel = await GetOrOpenChannelAsync(cancellationToken).ConfigureAwait(false);
+            IChannel channel = await GetOrOpenChannelAsync(publishToken).ConfigureAwait(false);
 
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(completedEvent, EventSerialization.Options);
 
@@ -98,9 +122,25 @@ public sealed partial class RabbitMqSearchEventsPublisher(
                 mandatory: false,
                 basicProperties: properties,
                 body: body,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: publishToken).ConfigureAwait(false);
 
             LogEventPublished(completedEvent.SearchId);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Our own deadline fired rather than the caller's token. Reported as a
+            // TimeoutException on purpose: a bare "the operation was canceled" tells whoever
+            // reads the log nothing, whereas this names the deadline and the broker as the
+            // suspects, which is exactly what a broker outage looks like from in here.
+            TimeoutException timeout = new(
+                $"Publishing the search completed event for search '{completedEvent.SearchId}' "
+                    + $"did not complete within {PublishTimeout}. The broker is unreachable or not responding.");
+
+            LogPublishFailed(timeout, completedEvent.SearchId, MessagingConstants.SearchCompletedExchange);
+
+            await DiscardChannelAsync().ConfigureAwait(false);
+
+            throw timeout;
         }
         catch (Exception ex)
         {
@@ -170,7 +210,17 @@ public sealed partial class RabbitMqSearchEventsPublisher(
 
         IConnection connection = await _connectionProvider.GetConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        IChannel channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken)
+        // Publisher confirms are opt-in and default to off. Without them BasicPublishAsync
+        // completes as soon as the frame reaches the socket, so a broker that never accepts
+        // the message would still be reported as a successful publish. With confirms and
+        // confirmation tracking enabled the publish awaits the broker's ack and surfaces a
+        // nack as a PublishException, which the caller already logs and rethrows.
+        CreateChannelOptions channelOptions = new(
+            publisherConfirmationsEnabled: true,
+            publisherConfirmationTrackingEnabled: true);
+
+        IChannel channel = await connection
+            .CreateChannelAsync(channelOptions, cancellationToken)
             .ConfigureAwait(false);
 
         await channel.ExchangeDeclareAsync(

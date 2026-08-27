@@ -69,6 +69,18 @@ public sealed partial class ExceptionHandlingMiddleware(
             // The caller went away. There is nobody left to answer, so this is not a failure.
             LogRequestAborted(logger, context.Request.Method, context.Request.Path.Value);
         }
+        catch (RpcException rpcException)
+            when (rpcException.StatusCode == StatusCode.Cancelled
+                && context.RequestAborted.IsCancellationRequested)
+        {
+            // Same situation, different exception type. When a polling client disconnects, the
+            // gRPC call it triggered is cancelled and the library reports that as an RpcException
+            // with StatusCode.Cancelled rather than an OperationCanceledException, so the branch
+            // above does not catch it. Without this it would fall through to the generic mapping
+            // and be reported as a 504 at Error level, blaming the Search Service for a timeout
+            // that never happened and putting noise in the logs every time somebody closes a tab.
+            LogRequestAborted(logger, context.Request.Method, context.Request.Path.Value);
+        }
         catch (Exception exception)
         {
             if (context.Response.HasStarted)
