@@ -34,6 +34,12 @@ try
         options.EnableDetailedErrors = builder.Environment.IsDevelopment();
     });
 
+    // Server reflection lets grpcurl and similar tools discover search.v1.SearchGrpcService
+    // without being handed a copy of search.proto. It is registered unconditionally but only
+    // mapped in Development below, because reflection advertises the full service surface and
+    // that is not something to expose from a production endpoint.
+    builder.Services.AddGrpcReflection();
+
     builder.Services.AddSearchApplication();
     builder.Services.AddSearchInfrastructure(builder.Configuration);
 
@@ -42,6 +48,20 @@ try
     app.UseSerilogRequestLogging();
 
     app.MapGrpcService<SearchGrpcServiceImpl>();
+
+    if (app.Environment.IsDevelopment())
+    {
+        app.MapGrpcReflectionService();
+    }
+
+    // Liveness only: reaching this handler proves the host is up and serving. It deliberately
+    // makes no claim about the broker, because a broker outage must not take the Search Service
+    // out of rotation -- searches keep running and keep being served, and completion events wait
+    // in the outbox until the broker returns.
+    //
+    // Both this and the hint below are served over h2c like every other endpoint here, so a
+    // browser cannot open them and a shell probe needs an HTTP/2 capable client.
+    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
     app.MapGet("/", () =>
         "Search Service speaks gRPC over HTTP/2 cleartext. "

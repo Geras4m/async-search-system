@@ -187,8 +187,6 @@ public sealed class AsyncSearchSystemFactory : IAsyncDisposable
 
             builder.ConfigureTestServices(services =>
             {
-                services.AddResponseBodyCompatibility();
-
                 // The gateway registered this client against a real address at start-up. Removing
                 // that registration first is what guarantees the test's registration is the one
                 // resolved, rather than relying on which of two identical registrations wins.

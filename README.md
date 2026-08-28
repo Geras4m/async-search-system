@@ -74,6 +74,7 @@ so allow the stack roughly a minute to settle on a cold start. When it is ready:
 | Gateway health probe | `http://localhost:8080/health` |
 | RabbitMQ management UI | `http://localhost:15672` (`guest` / `guest`) |
 | Search Service gRPC (h2c) | `http://localhost:5001` — optional, for `grpcurl` |
+| Search Service liveness (h2c) | `http://localhost:5001/health` — needs an HTTP/2 client |
 
 ### Start a search
 
@@ -485,7 +486,8 @@ projects inherit it — `IntegrationTests` from the two hosts it drives, and `Un
 Gateway project it references. Their generated `*.runtimeconfig.json` files ask for
 `Microsoft.NETCore.App` 8.0 *and* `Microsoft.AspNetCore.App` 8.0.
 
-If only a newer runtime is installed, opt into roll-forward:
+With the ASP.NET Core 8 runtime installed, everything builds and both suites run with no extra
+environment variables. If only a newer runtime is available, opt into roll-forward:
 
 ```powershell
 # PowerShell
@@ -497,6 +499,12 @@ dotnet test tests/UnitTests/UnitTests.csproj
 # bash
 DOTNET_ROLL_FORWARD=LatestMajor dotnet test tests/UnitTests/UnitTests.csproj
 ```
+
+Roll-forward is a workaround, not a supported configuration: running a `net8.0` assembly on a
+newer shared framework can surface mismatches between the framework and version-pinned packages.
+The integration suite previously needed a compatibility shim for exactly that reason, against
+`Microsoft.AspNetCore.TestHost` 8.0.30 on a .NET 10 framework. Installing the matching runtime is
+always the better fix.
 
 The Docker images ship the correct runtime — `mcr.microsoft.com/dotnet/aspnet:8.0` for the two web
 hosts, `runtime:8.0` for the worker — so nothing needs rolling forward inside a container. That is
@@ -579,14 +587,34 @@ The gateway's `Development` configuration already points `Grpc:SearchService` at
 Kestrel in the Search Service pins every endpoint to `HttpProtocols.Http2`, because gRPC without TLS
 requires HTTP/2 cleartext (h2c). Browsers do not speak h2c: they negotiate HTTP/2 only over TLS and
 fall back to HTTP/1.1 on a plain `http://` URL, which this host does not accept. Pointing a browser
-at `http://localhost:5001` therefore fails, and nothing is wrong. Use a gRPC client instead. Server
-reflection is not enabled, so hand the client the contract explicitly:
+at `http://localhost:5001` therefore fails, and nothing is wrong. Use a gRPC client instead:
 
 ```bash
 grpcurl -plaintext \
   -import-path src/Shared/Shared.GrpcContracts/Protos -proto search.proto \
   -d '{"destination":"Paris"}' \
   localhost:5001 search.v1.SearchGrpcService/StartSearch
+```
+
+Under `Development` the service also exposes gRPC server reflection, so a client can discover the
+contract instead of being handed it:
+
+```bash
+grpcurl -plaintext localhost:5001 list
+grpcurl -plaintext -d '{"destination":"Paris"}' \
+  localhost:5001 search.v1.SearchGrpcService/StartSearch
+```
+
+Reflection is mapped only in `Development`. It advertises the whole service surface, which is not
+something to publish from a production endpoint, and the compose stack runs as `Production`.
+
+The service also answers `GET /health` with `{"status":"healthy"}`. It is a liveness check and
+says nothing about the broker on purpose: a broker outage must not take the Search Service out of
+rotation, because searches keep running and completion events wait in the outbox. Like everything
+else on this host it is served over h2c, so probe it with an HTTP/2 client:
+
+```bash
+curl --http2-prior-knowledge -s http://localhost:5001/health
 ```
 
 The API Gateway, by contrast, is an ordinary HTTP/1.1 endpoint and works in any browser or `curl`.
