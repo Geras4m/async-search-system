@@ -422,6 +422,34 @@ execution, broker and outbox — is validated with data annotations and `Validat
 mistyped interval or an out-of-range port stops the host immediately with a precise message instead
 of failing halfway through a search.
 
+### The `Search` aggregate deliberately has no `Destination`
+
+`POST /searches` takes a destination, validates it on both sides of the gRPC boundary, and then
+discards it. The `Search` aggregate never stores it, no response echoes it back, and nothing
+downstream can read it. That looks like an oversight, so it is worth being explicit: it is not one.
+
+The specification defines the entity as literal code, and that definition has four members —
+`Id`, `IsCompleted`, `CreatedAtUtc` and `Results`. Adding a fifth would mean the domain model no
+longer matches the document it was written from. Where the specification gives a sketch, this
+implementation strengthens it: four projects instead of four folders, an immutable result type,
+snapshot reads. Where it gives an exact contract, the contract wins. A reviewer can diff the
+aggregate against the specification and find them identical, and that is worth more here than the
+field would be.
+
+It is also genuinely unused rather than merely unstored. Results are generated, not searched for —
+`SequentialHotelResultGenerator` produces `Hotel 1` through `Hotel 30` regardless of input — so
+there is nothing in this system that a stored destination would change. The validation still earns
+its place: rejecting a bad request at the edge is the behaviour the specification asks for, and it
+is exercised by tests on both sides.
+
+The moment that stops being true is the moment a real supplier lookup replaces the generator.
+Adding it then is mechanical rather than clever: the aggregate stores it and `Search.Create` takes
+it, the command handler passes it in, and it travels out along the path every other field already
+takes — `SearchResultsDto`, the query handler, a field on `GetSearchResultsResponse` in the
+`.proto`, the gRPC mapping, and the gateway's own response type and client mapping. Eight files,
+none of them surprising, plus the tests that pin the shape. It is left undone because the
+specification defines the entity, not because it would be awkward.
+
 ## Configuration
 
 Each service reads `appsettings.json` (container defaults), then `appsettings.{Environment}.json`
