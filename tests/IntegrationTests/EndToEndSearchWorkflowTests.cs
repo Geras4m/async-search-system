@@ -166,6 +166,26 @@ public sealed class EndToEndSearchWorkflowTests(RabbitMqFixture broker)
     /// <param name="api">The gateway to warm up.</param>
     /// <param name="cancellationToken">Token that aborts the call.</param>
     /// <returns>A task that completes once the path is warm.</returns>
+    [DockerFact]
+    public async Task PolledSearch_EchoesTheDestinationItWasStartedWith()
+    {
+        // The destination crosses two boundaries on the way out: the aggregate to the protobuf
+        // response, then protobuf back to JSON. A mapping mistake at either one is invisible to
+        // the unit tests, which never leave their own layer.
+        using var cancellation = new CancellationTokenSource(TestTimeout);
+        await using var system = new AsyncSearchSystemFactory(broker.Endpoint);
+
+        var api = new GatewayApi(system.CreateGatewayClient());
+
+        var searchId = await api.StartSearchAsync("Reykjavik", cancellation.Token);
+
+        var body = await api.GetSearchJsonAsync(searchId, cancellation.Token);
+
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("destination").GetString()
+            .ShouldBe("Reykjavik", $"the polled search should report what it was searching for: {body}");
+    }
+
     private static async Task WarmUpAsync(GatewayApi api, CancellationToken cancellationToken)
     {
         using var response = await api.GetSearchAsync(Guid.NewGuid().ToString(), cancellationToken);

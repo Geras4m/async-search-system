@@ -5,10 +5,12 @@ namespace IntegrationTests.Fixtures;
 /// rather than reused from the gateway so the tests pin the wire contract independently.
 /// </summary>
 /// <param name="SearchId">Identifier of the polled search.</param>
+/// <param name="Destination">Destination the search was started for.</param>
 /// <param name="IsCompleted">Whether the search has produced its final batch.</param>
 /// <param name="Results">Hotels accumulated so far.</param>
 internal sealed record SearchStateDocument(
     Guid SearchId,
+    string Destination,
     bool IsCompleted,
     IReadOnlyList<HotelDocument> Results);
 

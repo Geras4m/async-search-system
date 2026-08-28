@@ -170,4 +170,18 @@ public sealed class GetSearchResultsQueryHandlerTests
         await Should.ThrowAsync<ArgumentNullException>(
             () => _handler.Handle(null!, CancellationToken.None));
     }
+
+    [Fact]
+    public async Task Handle_ProjectsTheDestinationOntoTheResult()
+    {
+        Guid searchId = Guid.NewGuid();
+        _repository
+            .GetAsync(searchId, Arg.Any<CancellationToken>())
+            .Returns(Search.Create(searchId, "Reykjavik", CreatedAtUtc));
+
+        var result = await _handler.Handle(new GetSearchResultsQuery(searchId), CancellationToken.None);
+
+        result.ShouldNotBeNull();
+        result.Destination.ShouldBe("Reykjavik");
+    }
 }

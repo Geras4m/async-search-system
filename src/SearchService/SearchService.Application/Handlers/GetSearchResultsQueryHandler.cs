@@ -43,6 +43,6 @@ public sealed class GetSearchResultsQueryHandler(ISearchRepository repository)
         IReadOnlyList<HotelResultDto> results =
             [.. search.Results.Select(static hotel => new HotelResultDto(hotel.HotelId, hotel.Name, hotel.Price))];
 
-        return new SearchResultsDto(search.Id, search.IsCompleted, search.CreatedAtUtc, results);
+        return new SearchResultsDto(search.Id, search.Destination, search.IsCompleted, search.CreatedAtUtc, results);
     }
 }

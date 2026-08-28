@@ -99,6 +99,7 @@ Immediately after starting, before the first batch lands:
 ```json
 {
   "searchId": "cbaf4961-10d1-42a0-b24d-111111111111",
+  "destination": "Paris",
   "isCompleted": false,
   "results": []
 }
@@ -109,6 +110,7 @@ Around the twelve second mark, after two batches (abbreviated to three of the te
 ```json
 {
   "searchId": "cbaf4961-10d1-42a0-b24d-111111111111",
+  "destination": "Paris",
   "isCompleted": false,
   "results": [
     { "hotelId": "0d2f7c19-6a54-4f0b-9a3e-1c8b5d2e7f40", "name": "Hotel 1", "price": 212 },
@@ -124,6 +126,7 @@ holds all thirty hotels; it is abbreviated to three entries here:
 ```json
 {
   "searchId": "cbaf4961-10d1-42a0-b24d-111111111111",
+  "destination": "Paris",
   "isCompleted": true,
   "results": [
     { "hotelId": "0d2f7c19-6a54-4f0b-9a3e-1c8b5d2e7f40", "name": "Hotel 1", "price": 212 },
@@ -422,34 +425,40 @@ execution, broker and outbox — is validated with data annotations and `Validat
 mistyped interval or an out-of-range port stops the host immediately with a precise message instead
 of failing halfway through a search.
 
-### `Destination` is stored on the aggregate, but not exposed
+### `Destination` is carried by the aggregate and returned by the API
 
-The specification defines the `Search` entity as literal code with four members, and
-`Destination` is not among them. It is on the aggregate anyway, and the reasoning is worth
-recording because the opposite choice is defensible and was in place first.
+The specification defines the `Search` entity as literal code with four members, and `Destination`
+is not among them. It is on the aggregate, and in the polled response, and the reasoning is worth
+recording because both were the other way round first.
 
-The argument for matching the entity exactly falls down on inspection: this implementation already
-departs from that snippet in four ways. The setters are private, `List<HotelResult>` is exposed as
-`IReadOnlyList<HotelResult>`, the type carries behaviour rather than being a bag of properties,
-and `CompletedAtUtc` was added because the completion event needs a timestamp — a fifth member the
-specification puts on the *event*, not the entity. Having deviated four times on judgement, holding
-the line on the fifth was not consistency, it was just where the deviation happened to stop.
+Two arguments were used to justify leaving it out, and neither survives inspection.
 
-The stronger reason is what the field is. A search is a search *for* somewhere. An aggregate that
-cannot say what it was searching for is not a complete record of itself, and the smell it produced
-was real: `POST /searches` validated a destination at both boundaries and then discarded it, so
-`Search created.` named an identifier and nothing a human could recognise. It now reads
-`Search created. SearchId=<guid> Destination=Paris`, and the field is the one a real supplier
-lookup would be driven by. That the fake generator ignores it is a property of the generator, not a
-reason for the domain to forget it.
+The first was that the entity should match the specification exactly. It already does not: the
+setters are private, `List<HotelResult>` is exposed as `IReadOnlyList<HotelResult>`, the type
+carries behaviour rather than being a bag of properties, and `CompletedAtUtc` was added because the
+completion event needs a timestamp — a member the specification puts on the *event*, not the entity.
+Having deviated four times on judgement, stopping at the fifth was where the deviation happened to
+end, not a principle.
 
-What has *not* changed is the wire contract. `GET /searches/{searchId}` still returns exactly the
-body the specification documents — `searchId`, `isCompleted`, `results` — because that shape is a
-contract with clients, and echoing the destination back would trade one documented deviation for
-another while fixing nothing. Adding it there later is additive in both JSON and protobuf, and
-travels the path every other field already takes: the DTO, the query handler, a field on
-`GetSearchResultsResponse` in the `.proto`, the gRPC mapping, and the gateway's response type and
-client mapping.
+The second was that the documented response body is a fixed contract. The specification's own
+acceptance criteria say otherwise: step 5 states that the final response *contains*
+`{ "isCompleted": true }` — one member, of a body that plainly also carries `searchId` and
+`results`. The examples are minimums, not exhaustive schemas, and adding a field is the
+backward-compatible change in both JSON and protobuf. `destination` is field 5 on
+`GetSearchResultsResponse`; a client built against the older contract ignores it.
+
+What is left is the actual question, which is what the field is. A search is a search *for*
+somewhere. An aggregate that cannot say what it was searching for is not a complete record of
+itself, and a client polling by identifier alone has no way to confirm what it asked for. The
+smell was concrete: `POST /searches` validated a destination at both boundaries and discarded it,
+so `Search created.` named an identifier and nothing a human could recognise. It now reads
+`Search created. SearchId=<guid> Destination=Paris`, the polled response echoes it, and it is the
+field a real supplier lookup would be driven by. That the fake generator ignores it is a property
+of the generator, not a reason for the domain to forget it.
+
+The field crosses two mapping boundaries on the way out — aggregate to protobuf, protobuf back to
+JSON — so an integration test asserts the polled response echoes the destination the search was
+started with. Unit tests never leave their own layer and would not catch a mistake at either one.
 
 ## Configuration
 

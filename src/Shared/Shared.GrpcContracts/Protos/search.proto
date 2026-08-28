@@ -37,6 +37,10 @@ message GetSearchResultsResponse {
   bool is_completed = 2;
   repeated HotelResult results = 3;
   google.protobuf.Timestamp created_at_utc = 4;
+
+  // Destination the search was started for. Field 5 is new; adding a field is backward
+  // compatible, and an older client simply ignores it.
+  string destination = 5;
 }
 
 message HotelResult {

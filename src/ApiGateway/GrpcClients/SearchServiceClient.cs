@@ -69,7 +69,7 @@ public sealed partial class SearchServiceClient(
 
             LogSearchResultsFetched(logger, searchId, response.IsCompleted, results.Count);
 
-            return new SearchResultsResponse(searchId, response.IsCompleted, results);
+            return new SearchResultsResponse(searchId, response.Destination, response.IsCompleted, results);
         }
         catch (RpcException exception) when (exception.StatusCode == StatusCode.NotFound)
         {

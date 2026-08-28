@@ -97,6 +97,7 @@ public sealed partial class SearchGrpcServiceImpl(IMediator mediator, ILogger<Se
         var response = new GetSearchResultsResponse
         {
             SearchId = results.SearchId.ToString(),
+            Destination = results.Destination,
             IsCompleted = results.IsCompleted,
             CreatedAtUtc = Timestamp.FromDateTime(
                 DateTime.SpecifyKind(results.CreatedAtUtc, DateTimeKind.Utc)),

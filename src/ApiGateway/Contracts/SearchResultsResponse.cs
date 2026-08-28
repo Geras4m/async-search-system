@@ -5,6 +5,7 @@ namespace ApiGateway.Contracts;
 /// moment it was polled.
 /// </summary>
 /// <param name="SearchId">Identifier of the polled search.</param>
+/// <param name="Destination">Destination the search was started for.</param>
 /// <param name="IsCompleted">
 /// <see langword="true"/> once every batch has been produced and the search is final;
 /// <see langword="false"/> while results are still arriving.
@@ -20,6 +21,7 @@ namespace ApiGateway.Contracts;
 /// </remarks>
 public sealed record SearchResultsResponse(
     Guid SearchId,
+    string Destination,
     bool IsCompleted,
     IReadOnlyList<HotelResultResponse> Results);
 
