@@ -37,7 +37,7 @@ public sealed partial class StartSearchCommandHandler(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var search = Search.Create(Guid.NewGuid(), clock.UtcNow);
+        var search = Search.Create(Guid.NewGuid(), request.Destination, clock.UtcNow);
 
         // Ordering is deliberate: persist first, schedule second. The background engine picks an
         // identifier up the instant it is queued, so scheduling before the repository knows about
@@ -46,7 +46,7 @@ public sealed partial class StartSearchCommandHandler(
 
         // Logged before scheduling so the creation record can never appear after the first
         // "Batch added" line written by the engine for the very same search.
-        LogSearchCreated(logger, search.Id);
+        LogSearchCreated(logger, search.Id, search.Destination);
 
         await scheduler.ScheduleAsync(search.Id, cancellationToken);
 
@@ -56,6 +56,6 @@ public sealed partial class StartSearchCommandHandler(
     [LoggerMessage(
         EventId = 1001,
         Level = LogLevel.Information,
-        Message = "Search created. SearchId={SearchId}")]
-    private static partial void LogSearchCreated(ILogger logger, Guid searchId);
+        Message = "Search created. SearchId={SearchId} Destination={Destination}")]
+    private static partial void LogSearchCreated(ILogger logger, Guid searchId, string destination);
 }

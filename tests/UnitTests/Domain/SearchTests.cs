@@ -21,10 +21,11 @@ public sealed class SearchTests
         Guid searchId = Guid.NewGuid();
 
         // Act
-        var search = Search.Create(searchId, CreatedAtUtc);
+        var search = Search.Create(searchId, "Paris", CreatedAtUtc);
 
         // Assert
         search.Id.ShouldBe(searchId);
+        search.Destination.ShouldBe("Paris");
         search.CreatedAtUtc.ShouldBe(CreatedAtUtc);
         search.IsCompleted.ShouldBeFalse();
         search.CompletedAtUtc.ShouldBeNull();
@@ -35,7 +36,7 @@ public sealed class SearchTests
     public void AppendResults_WithSuccessiveBatches_AccumulatesThemInOrder()
     {
         // Arrange
-        var search = Search.Create(Guid.NewGuid(), CreatedAtUtc);
+        var search = Search.Create(Guid.NewGuid(), "Paris", CreatedAtUtc);
 
         // Act
         search.AppendResults([new HotelResult("hotel-a", "Hotel 1", 100m)]);
@@ -55,7 +56,7 @@ public sealed class SearchTests
     public void AppendResults_WithAnEmptyBatch_LeavesTheSearchUnchanged()
     {
         // Arrange
-        var search = Search.Create(Guid.NewGuid(), CreatedAtUtc);
+        var search = Search.Create(Guid.NewGuid(), "Paris", CreatedAtUtc);
 
         // Act
         search.AppendResults([]);
@@ -68,7 +69,7 @@ public sealed class SearchTests
     public void AppendResults_AfterCompletion_ThrowsInvalidOperationException()
     {
         // Arrange
-        var search = Search.Create(Guid.NewGuid(), CreatedAtUtc);
+        var search = Search.Create(Guid.NewGuid(), "Paris", CreatedAtUtc);
         search.MarkCompleted(CompletedAtUtc);
 
         // Act / Assert
@@ -82,7 +83,7 @@ public sealed class SearchTests
     public void AppendResults_WithANullBatch_ThrowsArgumentNullException()
     {
         // Arrange
-        var search = Search.Create(Guid.NewGuid(), CreatedAtUtc);
+        var search = Search.Create(Guid.NewGuid(), "Paris", CreatedAtUtc);
 
         // Act / Assert
         Should.Throw<ArgumentNullException>(() => search.AppendResults(null!));
@@ -92,7 +93,7 @@ public sealed class SearchTests
     public void MarkCompleted_OnARunningSearch_ReturnsTrueAndStampsTheCompletionTime()
     {
         // Arrange
-        var search = Search.Create(Guid.NewGuid(), CreatedAtUtc);
+        var search = Search.Create(Guid.NewGuid(), "Paris", CreatedAtUtc);
 
         // Act
         bool completed = search.MarkCompleted(CompletedAtUtc);
@@ -107,7 +108,7 @@ public sealed class SearchTests
     public void MarkCompleted_OnAnAlreadyCompletedSearch_ReturnsFalseAndKeepsTheOriginalTimestamp()
     {
         // Arrange
-        var search = Search.Create(Guid.NewGuid(), CreatedAtUtc);
+        var search = Search.Create(Guid.NewGuid(), "Paris", CreatedAtUtc);
         search.MarkCompleted(CompletedAtUtc);
 
         // Act
@@ -123,7 +124,7 @@ public sealed class SearchTests
     public void CreateSnapshot_AfterTheOriginalChanges_LeavesTheSnapshotUntouched()
     {
         // Arrange
-        var search = Search.Create(Guid.NewGuid(), CreatedAtUtc);
+        var search = Search.Create(Guid.NewGuid(), "Paris", CreatedAtUtc);
         search.AppendResults([new HotelResult("hotel-a", "Hotel 1", 100m)]);
 
         // Act
@@ -142,7 +143,7 @@ public sealed class SearchTests
     public void CreateSnapshot_AfterTheSnapshotChanges_LeavesTheOriginalUntouched()
     {
         // Arrange
-        var search = Search.Create(Guid.NewGuid(), CreatedAtUtc);
+        var search = Search.Create(Guid.NewGuid(), "Paris", CreatedAtUtc);
         search.AppendResults([new HotelResult("hotel-a", "Hotel 1", 100m)]);
 
         // Act
@@ -161,7 +162,7 @@ public sealed class SearchTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        var search = Search.Create(searchId, CreatedAtUtc);
+        var search = Search.Create(searchId, "Paris", CreatedAtUtc);
         search.AppendResults(
         [
             new HotelResult("hotel-a", "Hotel 1", 123.45m),
@@ -187,6 +188,28 @@ public sealed class SearchTests
     {
         // Act / Assert
         Should.Throw<ArgumentNullException>(
-            () => new Search(Guid.NewGuid(), CreatedAtUtc, isCompleted: false, completedAtUtc: null, results: null!));
+            () => new Search(Guid.NewGuid(), "Paris", CreatedAtUtc, isCompleted: false, completedAtUtc: null, results: null!));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Create_WithoutADestination_Throws(string? destination)
+    {
+        Should.Throw<ArgumentException>(
+            () => Search.Create(Guid.NewGuid(), destination!, CreatedAtUtc));
+    }
+
+    [Fact]
+    public void CreateSnapshot_CarriesTheDestination()
+    {
+        // A snapshot that dropped the destination would silently blank the field on every
+        // read, because the repository hands out snapshots rather than stored instances.
+        var search = Search.Create(Guid.NewGuid(), "Reykjavik", CreatedAtUtc);
+
+        var snapshot = search.CreateSnapshot();
+
+        snapshot.Destination.ShouldBe("Reykjavik");
     }
 }

@@ -179,7 +179,7 @@ Run the stack, then follow the logs in a second terminal while the loop above is
 | # | Criterion | How to verify |
 | --- | --- | --- |
 | 1 | Environment starts with one command | `docker compose up --build`, then `docker compose ps` lists `asyncsearch-rabbitmq`, `asyncsearch-searchservice`, `asyncsearch-apigateway`, `asyncsearch-notificationservice` |
-| 2 | `POST /searches` returns a `searchId` | the `curl` above returns `200` with `{ "searchId": "<guid>" }`; `docker compose logs searchservice` contains `Search created. SearchId=<guid>` |
+| 2 | `POST /searches` returns a `searchId` | the `curl` above returns `200` with `{ "searchId": "<guid>" }`; `docker compose logs searchservice` contains `Search created. SearchId=<guid> Destination=<destination>` |
 | 3 | `GET /searches/{guid}` returns the current state | the poll returns `200` with `isCompleted` and `results` |
 | 4 | Results grow every five seconds, six updates | `docker compose logs -f searchservice` shows six lines, `Batch added. SearchId=<guid> Batch=1 ResultCount=5` through `Batch=6 ResultCount=30` |
 | 5 | Final response has `isCompleted: true` | last line of the polling loop, plus the log line `Search completed. SearchId=<guid>` |
@@ -404,7 +404,7 @@ change to Infrastructure alone; the Application layer knows only the interface.
 Every log statement is a `[LoggerMessage]` partial method, so the template, event id and level are
 compiled into a strongly typed call: no boxing, no formatting work on a disabled level, and no
 interpolated string smuggled into a message template. Templates stay stable and structured, which is
-what makes the acceptance criteria greppable — `Search created. SearchId={SearchId}`,
+what makes the acceptance criteria greppable — `Search created. SearchId={SearchId} Destination={Destination}`,
 `Batch added. SearchId={SearchId} Batch={BatchNumber} ResultCount={ResultCount}`,
 `Search completed. SearchId={SearchId}`, `Event published. SearchId={SearchId}` and
 `Search completed event received. SearchId={SearchId} CompletedAtUtc={CompletedAtUtc}`. Serilog
@@ -422,33 +422,34 @@ execution, broker and outbox — is validated with data annotations and `Validat
 mistyped interval or an out-of-range port stops the host immediately with a precise message instead
 of failing halfway through a search.
 
-### The `Search` aggregate deliberately has no `Destination`
+### `Destination` is stored on the aggregate, but not exposed
 
-`POST /searches` takes a destination, validates it on both sides of the gRPC boundary, and then
-discards it. The `Search` aggregate never stores it, no response echoes it back, and nothing
-downstream can read it. That looks like an oversight, so it is worth being explicit: it is not one.
+The specification defines the `Search` entity as literal code with four members, and
+`Destination` is not among them. It is on the aggregate anyway, and the reasoning is worth
+recording because the opposite choice is defensible and was in place first.
 
-The specification defines the entity as literal code, and that definition has four members —
-`Id`, `IsCompleted`, `CreatedAtUtc` and `Results`. Adding a fifth would mean the domain model no
-longer matches the document it was written from. Where the specification gives a sketch, this
-implementation strengthens it: four projects instead of four folders, an immutable result type,
-snapshot reads. Where it gives an exact contract, the contract wins. A reviewer can diff the
-aggregate against the specification and find them identical, and that is worth more here than the
-field would be.
+The argument for matching the entity exactly falls down on inspection: this implementation already
+departs from that snippet in four ways. The setters are private, `List<HotelResult>` is exposed as
+`IReadOnlyList<HotelResult>`, the type carries behaviour rather than being a bag of properties,
+and `CompletedAtUtc` was added because the completion event needs a timestamp — a fifth member the
+specification puts on the *event*, not the entity. Having deviated four times on judgement, holding
+the line on the fifth was not consistency, it was just where the deviation happened to stop.
 
-It is also genuinely unused rather than merely unstored. Results are generated, not searched for —
-`SequentialHotelResultGenerator` produces `Hotel 1` through `Hotel 30` regardless of input — so
-there is nothing in this system that a stored destination would change. The validation still earns
-its place: rejecting a bad request at the edge is the behaviour the specification asks for, and it
-is exercised by tests on both sides.
+The stronger reason is what the field is. A search is a search *for* somewhere. An aggregate that
+cannot say what it was searching for is not a complete record of itself, and the smell it produced
+was real: `POST /searches` validated a destination at both boundaries and then discarded it, so
+`Search created.` named an identifier and nothing a human could recognise. It now reads
+`Search created. SearchId=<guid> Destination=Paris`, and the field is the one a real supplier
+lookup would be driven by. That the fake generator ignores it is a property of the generator, not a
+reason for the domain to forget it.
 
-The moment that stops being true is the moment a real supplier lookup replaces the generator.
-Adding it then is mechanical rather than clever: the aggregate stores it and `Search.Create` takes
-it, the command handler passes it in, and it travels out along the path every other field already
-takes — `SearchResultsDto`, the query handler, a field on `GetSearchResultsResponse` in the
-`.proto`, the gRPC mapping, and the gateway's own response type and client mapping. Eight files,
-none of them surprising, plus the tests that pin the shape. It is left undone because the
-specification defines the entity, not because it would be awkward.
+What has *not* changed is the wire contract. `GET /searches/{searchId}` still returns exactly the
+body the specification documents — `searchId`, `isCompleted`, `results` — because that shape is a
+contract with clients, and echoing the destination back would trade one documented deviation for
+another while fixing nothing. Adding it there later is additive in both JSON and protobuf, and
+travels the path every other field already takes: the DTO, the query handler, a field on
+`GetSearchResultsResponse` in the `.proto`, the gRPC mapping, and the gateway's response type and
+client mapping.
 
 ## Configuration
 

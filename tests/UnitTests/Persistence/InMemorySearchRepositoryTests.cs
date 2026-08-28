@@ -37,7 +37,7 @@ public sealed class InMemorySearchRepositoryTests
         Guid searchId = Guid.NewGuid();
 
         // Act
-        await _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None);
+        await _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None);
         Search? found = await _repository.GetAsync(searchId, CancellationToken.None);
 
         // Assert
@@ -54,7 +54,7 @@ public sealed class InMemorySearchRepositoryTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        await _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None);
+        await _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None);
 
         Search? loaded = await _repository.GetAsync(searchId, CancellationToken.None);
         loaded.ShouldNotBeNull();
@@ -78,11 +78,11 @@ public sealed class InMemorySearchRepositoryTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        await _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None);
+        await _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None);
 
         // Act / Assert
         await Should.ThrowAsync<InvalidOperationException>(
-            () => _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None));
+            () => _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None));
     }
 
     [Fact]
@@ -90,13 +90,13 @@ public sealed class InMemorySearchRepositoryTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        var original = Search.Create(searchId, CreatedAtUtc);
+        var original = Search.Create(searchId, "Paris", CreatedAtUtc);
         original.AppendResults([new HotelResult("hotel-a", "Hotel 1", 123.45m)]);
         await _repository.CreateAsync(original, CancellationToken.None);
 
         // Act
         await Should.ThrowAsync<InvalidOperationException>(
-            () => _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None));
+            () => _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None));
 
         // Assert
         Search? stored = await _repository.GetAsync(searchId, CancellationToken.None);
@@ -112,7 +112,7 @@ public sealed class InMemorySearchRepositoryTests
 
         // Act
         SearchNotFoundException exception = await Should.ThrowAsync<SearchNotFoundException>(
-            () => _repository.UpdateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None));
+            () => _repository.UpdateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None));
 
         // Assert
         exception.SearchId.ShouldBe(searchId);
@@ -151,7 +151,7 @@ public sealed class InMemorySearchRepositoryTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        await _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None);
+        await _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None);
 
         Search? firstRead = await _repository.GetAsync(searchId, CancellationToken.None);
         firstRead.ShouldNotBeNull();
@@ -173,7 +173,7 @@ public sealed class InMemorySearchRepositoryTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        await _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None);
+        await _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None);
 
         // Act
         Search? first = await _repository.GetAsync(searchId, CancellationToken.None);
@@ -193,7 +193,7 @@ public sealed class InMemorySearchRepositoryTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        var search = Search.Create(searchId, CreatedAtUtc);
+        var search = Search.Create(searchId, "Paris", CreatedAtUtc);
         await _repository.CreateAsync(search, CancellationToken.None);
 
         // Act
@@ -212,7 +212,7 @@ public sealed class InMemorySearchRepositoryTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        await _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None);
+        await _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None);
 
         Search? loaded = await _repository.GetAsync(searchId, CancellationToken.None);
         loaded.ShouldNotBeNull();
@@ -242,7 +242,7 @@ public sealed class InMemorySearchRepositoryTests
         const int batchCount = 400;
 
         Guid searchId = Guid.NewGuid();
-        await _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None);
+        await _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None);
 
         var observedCounts = new ConcurrentQueue<int>();
 
@@ -295,7 +295,7 @@ public sealed class InMemorySearchRepositoryTests
 
         // Act
         await Task.WhenAll(searchIds.Select(searchId =>
-            _repository.CreateAsync(Search.Create(searchId, CreatedAtUtc), CancellationToken.None)));
+            _repository.CreateAsync(Search.Create(searchId, "Paris", CreatedAtUtc), CancellationToken.None)));
 
         // Assert
         foreach (Guid searchId in searchIds)
@@ -318,5 +318,17 @@ public sealed class InMemorySearchRepositoryTests
                     Name: string.Create(CultureInfo.InvariantCulture, $"Hotel {hotelNumber}"),
                     Price: 100m + hotelNumber)),
         ];
+    }
+
+    [Fact]
+    public async Task GetAsync_ReturnsTheDestinationTheSearchWasCreatedWith()
+    {
+        Guid searchId = Guid.NewGuid();
+        await _repository.CreateAsync(Search.Create(searchId, "Reykjavik", CreatedAtUtc), CancellationToken.None);
+
+        var loaded = await _repository.GetAsync(searchId, CancellationToken.None);
+
+        loaded.ShouldNotBeNull();
+        loaded.Destination.ShouldBe("Reykjavik");
     }
 }

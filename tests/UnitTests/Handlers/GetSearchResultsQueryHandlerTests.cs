@@ -49,7 +49,7 @@ public sealed class GetSearchResultsQueryHandlerTests
         Guid searchId = Guid.NewGuid();
         _repository
             .GetAsync(searchId, Arg.Any<CancellationToken>())
-            .Returns(Search.Create(searchId, CreatedAtUtc));
+            .Returns(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         SearchResultsDto? result = await _handler.Handle(
@@ -70,7 +70,7 @@ public sealed class GetSearchResultsQueryHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        var search = Search.Create(searchId, CreatedAtUtc);
+        var search = Search.Create(searchId, "Paris", CreatedAtUtc);
         search.AppendResults(
         [
             new HotelResult("hotel-a", "Hotel 1", 123.45m),
@@ -105,7 +105,7 @@ public sealed class GetSearchResultsQueryHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        var search = Search.Create(searchId, CreatedAtUtc);
+        var search = Search.Create(searchId, "Paris", CreatedAtUtc);
         search.AppendResults([new HotelResult("hotel-a", "Hotel 1", 100m)]);
         search.MarkCompleted(CreatedAtUtc.AddSeconds(30));
 
@@ -127,7 +127,7 @@ public sealed class GetSearchResultsQueryHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        var search = Search.Create(searchId, CreatedAtUtc);
+        var search = Search.Create(searchId, "Paris", CreatedAtUtc);
         search.AppendResults([new HotelResult("hotel-a", "Hotel 1", 100m)]);
         search.AppendResults([new HotelResult("hotel-b", "Hotel 2", 110m)]);
         search.AppendResults([new HotelResult("hotel-c", "Hotel 3", 120m)]);
@@ -152,7 +152,7 @@ public sealed class GetSearchResultsQueryHandlerTests
         Guid searchId = Guid.NewGuid();
         _repository
             .GetAsync(searchId, Arg.Any<CancellationToken>())
-            .Returns(Search.Create(searchId, CreatedAtUtc));
+            .Returns(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         using var cancellation = new CancellationTokenSource();
 

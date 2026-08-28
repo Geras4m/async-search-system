@@ -45,7 +45,7 @@ public sealed class AppendSearchBatchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         await _handler.Handle(new AppendSearchBatchCommand(searchId, 1), CancellationToken.None);
@@ -65,7 +65,7 @@ public sealed class AppendSearchBatchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         for (int batchNumber = 1; batchNumber <= 3; batchNumber++)
@@ -87,7 +87,7 @@ public sealed class AppendSearchBatchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         await _handler.Handle(new AppendSearchBatchCommand(searchId, 6), CancellationToken.None);
@@ -123,7 +123,7 @@ public sealed class AppendSearchBatchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        var completed = Search.Create(searchId, CreatedAtUtc);
+        var completed = Search.Create(searchId, "Paris", CreatedAtUtc);
         completed.MarkCompleted(CreatedAtUtc.AddSeconds(30));
         GivenStoredSearch(completed);
 
@@ -139,7 +139,7 @@ public sealed class AppendSearchBatchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
         using var cancellation = new CancellationTokenSource();
 
         // Act

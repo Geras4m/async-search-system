@@ -23,20 +23,26 @@ public sealed class Search
     /// Rehydrates a search from stored state.
     /// </summary>
     /// <param name="id">Identifier of the search.</param>
+    /// <param name="destination">Destination the search was started for.</param>
     /// <param name="createdAtUtc">UTC instant the search was created.</param>
     /// <param name="isCompleted">Whether result generation has finished.</param>
     /// <param name="completedAtUtc">UTC instant the search completed, or <see langword="null"/> if still running.</param>
     /// <param name="results">Results accumulated so far.</param>
+    /// <exception cref="ArgumentException"><paramref name="destination"/> is null, empty or whitespace.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="results"/> is <see langword="null"/>.</exception>
     public Search(
         Guid id,
+        string destination,
         DateTime createdAtUtc,
         bool isCompleted,
         DateTime? completedAtUtc,
         IEnumerable<HotelResult> results)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentNullException.ThrowIfNull(results);
 
         Id = id;
+        Destination = destination;
         CreatedAtUtc = createdAtUtc;
         IsCompleted = isCompleted;
         CompletedAtUtc = completedAtUtc;
@@ -45,6 +51,16 @@ public sealed class Search
 
     /// <summary>Unique identifier clients poll with.</summary>
     public Guid Id { get; }
+
+    /// <summary>Destination the search was started for.</summary>
+    /// <remarks>
+    /// Carried on the aggregate rather than validated and discarded. It is what the search
+    /// <em>is</em>, so a search that cannot say what it was searching for is not a complete
+    /// record of itself: it makes the creation log actionable and is the field a real supplier
+    /// lookup would be driven by. The fake generator ignores it, which is a property of the
+    /// generator, not a reason for the domain to forget it.
+    /// </remarks>
+    public string Destination { get; }
 
     /// <summary>UTC instant at which the search was created.</summary>
     public DateTime CreatedAtUtc { get; }
@@ -62,10 +78,12 @@ public sealed class Search
     /// Starts a brand new search with no results.
     /// </summary>
     /// <param name="id">Identifier to assign.</param>
+    /// <param name="destination">Destination being searched.</param>
     /// <param name="createdAtUtc">UTC creation instant.</param>
     /// <returns>A search in its initial, incomplete state.</returns>
-    public static Search Create(Guid id, DateTime createdAtUtc) =>
-        new(id, createdAtUtc, isCompleted: false, completedAtUtc: null, results: []);
+    /// <exception cref="ArgumentException"><paramref name="destination"/> is null, empty or whitespace.</exception>
+    public static Search Create(Guid id, string destination, DateTime createdAtUtc) =>
+        new(id, destination, createdAtUtc, isCompleted: false, completedAtUtc: null, results: []);
 
     /// <summary>
     /// Appends one batch of hotel results.
@@ -116,5 +134,5 @@ public sealed class Search
     /// half-appended batch while the background engine is writing.
     /// <see cref="HotelResult"/> is immutable, so copying the list is enough.
     /// </remarks>
-    public Search CreateSnapshot() => new(Id, CreatedAtUtc, IsCompleted, CompletedAtUtc, _results);
+    public Search CreateSnapshot() => new(Id, Destination, CreatedAtUtc, IsCompleted, CompletedAtUtc, _results);
 }

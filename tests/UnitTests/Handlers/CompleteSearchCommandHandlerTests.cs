@@ -49,7 +49,7 @@ public sealed class CompleteSearchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
@@ -68,7 +68,7 @@ public sealed class CompleteSearchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         SearchCompletedEvent? published = null;
         _publisher
@@ -97,7 +97,7 @@ public sealed class CompleteSearchCommandHandlerTests
         // Completion is what clients poll for; the event only announces it. Writing first means a
         // broker outage can never leave a search stuck reporting itself as still running.
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
@@ -120,7 +120,7 @@ public sealed class CompleteSearchCommandHandlerTests
         // leave a window in which a crash loses the event, which is the exact hole the outbox
         // exists to close.
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
@@ -145,7 +145,7 @@ public sealed class CompleteSearchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         SearchCompletedEvent? published = null;
         _publisher
@@ -172,7 +172,7 @@ public sealed class CompleteSearchCommandHandlerTests
         // Nothing is owed once the broker has the event, so the background publisher must find an
         // empty outbox and never redeliver it.
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
@@ -197,7 +197,7 @@ public sealed class CompleteSearchCommandHandlerTests
         // search completes must not fail the command and must not discard the announcement: the
         // search stays complete, the entry stays owed, and the background publisher retries it.
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         _publisher
             .PublishSearchCompletedAsync(Arg.Any<SearchCompletedEvent>(), Arg.Any<CancellationToken>())
@@ -224,7 +224,7 @@ public sealed class CompleteSearchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
 
         // Act
         await _handler.Handle(new CompleteSearchCommand(searchId), CancellationToken.None);
@@ -267,7 +267,7 @@ public sealed class CompleteSearchCommandHandlerTests
     {
         // Arrange
         Guid searchId = Guid.NewGuid();
-        GivenStoredSearch(Search.Create(searchId, CreatedAtUtc));
+        GivenStoredSearch(Search.Create(searchId, "Paris", CreatedAtUtc));
         using var cancellation = new CancellationTokenSource();
 
         // Act

@@ -158,4 +158,20 @@ public sealed class StartSearchCommandHandlerTests
         await Should.ThrowAsync<ArgumentNullException>(
             () => _handler.Handle(null!, CancellationToken.None));
     }
+
+    [Fact]
+    public async Task Handle_PersistsTheSearchWithTheRequestedDestination()
+    {
+        // The destination is validated at both boundaries; this pins that it also survives into
+        // the aggregate, rather than being checked and then thrown away.
+        Search? persisted = null;
+        _repository
+            .When(repository => repository.CreateAsync(Arg.Any<Search>(), Arg.Any<CancellationToken>()))
+            .Do(call => persisted = call.Arg<Search>());
+
+        await _handler.Handle(new StartSearchCommand("Reykjavik"), CancellationToken.None);
+
+        persisted.ShouldNotBeNull();
+        persisted.Destination.ShouldBe("Reykjavik");
+    }
 }
